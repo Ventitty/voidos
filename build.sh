@@ -80,10 +80,7 @@ elif [ "$MODE" = "flash" ]; then
     esptool --chip ${CHIP} elf2image ${KERNEL_ELF} -o ${KERNEL_BIN}
 
     echo "[4/4] Flashage sur l'ESP32 (${PORT})"
-    esptool --chip ${CHIP} --port "${PORT}" write_flash -fm dio 0x1000 ${KERNEL_BIN}
-
-    echo "Flash terminé ! Ouverture du moniteur série sur ${PORT}..."
-    picocom -b 115200 "${PORT}"
+    esptool --chip ${CHIP} --port "${PORT}" --after hard_reset write_flash -fm dio 0x1000 ${KERNEL_BIN}
 else
     echo "Usage : $0 [flash|qemu] [PORT]"
     exit 1

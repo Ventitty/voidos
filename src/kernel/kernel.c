@@ -25,9 +25,31 @@ void uart_print_hex(uint32_t val) {
 }
 
 void echo(void) {
+    /* Purge tout ce qui traîne dans le RX FIFO au démarrage (résidus de la
+     * session de flash esptool sur la même UART) et acquitte les éventuelles
+     * erreurs déjà levées (overflow / framing / break). Sans ça, un octet
+     * corrompu ou un flag d'erreur déjà actif peut faire croire en
+     * permanence à UART0_RX_FIFO_CNT qu'un octet est disponible -> le
+     * prompt se réaffiche en boucle infinie sans qu'aucune vraie touche
+     * n'ait été pressée. */
+    UART0_CONF0_REG |= UART_RXFIFO_RST;
+    UART0_CONF0_REG &= ~UART_RXFIFO_RST;
+    UART0_INT_CLR_REG = UART_RX_ERROR_MASK;
+
     uart_print("Input > ");
 
     while (1) {
+        /* Si une erreur RX est levée (overflow/framing/break), le FIFO peut
+         * rester dans un état incohérent : on l'acquitte et on repurge
+         * plutôt que de risquer de boucler sur un octet fantôme. */
+        uint32_t int_st = UART0_INT_ST_REG;
+        if (int_st & UART_RX_ERROR_MASK) {
+            UART0_INT_CLR_REG = UART_RX_ERROR_MASK;
+            UART0_CONF0_REG |= UART_RXFIFO_RST;
+            UART0_CONF0_REG &= ~UART_RXFIFO_RST;
+            continue;
+        }
+
         if (UART0_RX_FIFO_CNT > 0) {
             char c = (char)(UART0_FIFO & 0xFFu);
 
