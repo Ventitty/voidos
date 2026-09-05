@@ -49,7 +49,7 @@ ${CC} -nostdlib -T ${LINKER_SCRIPT} -g -fno-tree-loop-distribute-patterns -mtext
     -mabi=call0 \
     ${INCLUDES} \
     -o ${KERNEL_ELF} \
-    ${ARCH_DIR}/boot.S ${SRC_DIR}/kernel/kernel.c ${SRC_DIR}/memory_manager/memory.c \
+    ${ARCH_DIR}/boot.S ${ARCH_DIR}/vector.S ${SRC_DIR}/kernel/kernel.c ${SRC_DIR}/memory_manager/memory.c ${SRC_DIR}/interrupts/interrupts.c ${SRC_DIR}/utils/utils.c \
     -lgcc
 
 echo "Succès : ${KERNEL_ELF} généré."
