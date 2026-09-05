@@ -1,6 +1,4 @@
-#include "src/utils/utils.h"
 #include "src/kernel/kernel.h"
-#include "src/interrupts/interrupts.h"
 
 void uart_putchar(char c) {
     while (((UART0_STATUS >> 16) & 0xFF) >= 128);
@@ -26,7 +24,29 @@ void uart_print_hex(uint32_t val) {
     }
 }
 
+void echo(void) {
+    uart_print("Input > ");
+
+    while (1) {
+        if (UART0_RX_FIFO_CNT > 0) {
+            char c = (char)(UART0_FIFO & 0xFFu);
+
+            if (c == '\r' || c == '\n') {
+                uart_putchar('\r');
+                uart_putchar('\n');
+                uart_print("Input > ");
+            } else if (c == '\b' || c == 0x7F) {
+                uart_print("\b \b");
+            } else {
+                uart_putchar(c);
+            }
+        }
+    }
+}
+
+
 void kernel_main(void) {
+    wdt_disable_all();
     mm_init();
     interrupts_init();
 
@@ -46,13 +66,7 @@ void kernel_main(void) {
 
     uart_print(alloc);
 
-    __asm__ volatile ("ill");
-
-    volatile int a = 42;
-    volatile int b = 0;
-    volatile int c = a / b;
-
-    (void)c;
+    echo();
 
     while (1) {
         __asm__ volatile ("waiti 0");

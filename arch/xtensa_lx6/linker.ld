@@ -20,7 +20,6 @@ SECTIONS
 
   .iram0.vectors : ALIGN(1024)
   {
-    _vector_base = .;
     KEEP(*(.iram0.vectors))
   } > iram0_0_seg
 

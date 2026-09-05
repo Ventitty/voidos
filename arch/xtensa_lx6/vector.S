@@ -103,7 +103,8 @@
 
 .macro call_isr isr_name, level
     SaveCpuContext \level
-    mov     a2, sp                  /* Passe SP en 1er argument (a2) */
+    mov     a2, sp                  /* 1er argument (a2)  : cpu_context_t *sp   */
+    movi    a3, \level              /* 2e argument  (a3)  : niveau d'interruption */
 
     /* Long call sécurisé pour dépasser la limite des 128Ko de call0 */
     movi    a0, \isr_name
@@ -129,9 +130,93 @@
 
 _vector_base:
 
+    /* -----------------------------------------------------------------
+       Vecteurs de débordement/soulagement de fenêtre de registres.
+       Ce sont des vecteurs matériels FIXES (adresses imposées par le
+       cœur Xtensa, non configurables) : ils sont déclenchés par les
+       instructions "entry"/"call4"/"call8"/"call12" dès qu'une routine
+       compilée en ABI windowed (libgcc, newlib, code ROM Espressif...)
+       s'exécute. Un seul "rfwo" à l'offset 0 est INSUFFISANT : les 5
+       autres offsets restaient non initialisés (donc remplis de zéros
+       = instruction illégale) -> crash au premier appel windowed.
+       ----------------------------------------------------------------- */
     .org 0x000
-    WindowVectors:
+    WindowOverflow4:
+        s32e    a0, a5, -16
+        s32e    a1, a5, -12
+        s32e    a2, a5, -8
+        s32e    a3, a5, -4
         rfwo
+
+    .org 0x040
+    WindowUnderflow4:
+        l32e    a0, a5, -16
+        l32e    a1, a5, -12
+        l32e    a2, a5, -8
+        l32e    a3, a5, -4
+        rfwu
+
+    .org 0x080
+    WindowOverflow8:
+        s32e    a0, a9, -16
+        l32e    a0, a1, -12
+        s32e    a1, a9, -12
+        s32e    a2, a9, -8
+        s32e    a3, a9, -4
+        s32e    a4, a0, -32
+        s32e    a5, a0, -28
+        s32e    a6, a0, -24
+        s32e    a7, a0, -20
+        rfwo
+
+    .org 0x0C0
+    WindowUnderflow8:
+        l32e    a1, a9, -12
+        l32e    a0, a1, -12
+        s32e    a0, a9, -12
+        l32e    a7, a0, -20
+        l32e    a6, a0, -24
+        l32e    a5, a0, -28
+        l32e    a4, a0, -32
+        l32e    a0, a9, -16
+        l32e    a2, a9, -8
+        l32e    a3, a9, -4
+        rfwu
+
+    .org 0x100
+    WindowOverflow12:
+        s32e    a0, a13, -16
+        l32e    a0, a1, -12
+        s32e    a1, a13, -12
+        s32e    a2, a13, -8
+        s32e    a3, a13, -4
+        s32e    a4, a0, -48
+        s32e    a5, a0, -44
+        s32e    a6, a0, -40
+        s32e    a7, a0, -36
+        s32e    a8, a0, -32
+        s32e    a9, a0, -28
+        s32e    a10, a0, -24
+        s32e    a11, a0, -20
+        rfwo
+
+    .org 0x140
+    WindowUnderflow12:
+        l32e    a1, a13, -12
+        l32e    a0, a1, -12
+        s32e    a0, a13, -12
+        l32e    a11, a0, -20
+        l32e    a10, a0, -24
+        l32e    a9, a0, -28
+        l32e    a8, a0, -32
+        l32e    a7, a0, -36
+        l32e    a6, a0, -40
+        l32e    a5, a0, -44
+        l32e    a4, a0, -48
+        l32e    a0, a13, -16
+        l32e    a2, a13, -8
+        l32e    a3, a13, -4
+        rfwu
 
     .org 0x180
     Level2InterruptVector:
@@ -167,12 +252,7 @@ _vector_base:
 
     .org 0x3C0
     DoubleExceptionVector:
-        1: j 1b
-
-    /* Obligatoire sur ESP32 LX6 en mode bare-metal (PS.UM = 0) */
-    .org 0x400
-    KernelExceptionVector:
-        j KernelExceptionVectorHandler
+        j DoubleExceptionVectorHandler
 
 .size _vector_base, .-_vector_base
 
@@ -213,7 +293,10 @@ _vector_handlers:
         call_isr c_interrupt_handler, 1
         rfe
 
-    KernelExceptionVectorHandler:
+    /* Double exception = faute survenue pendant le traitement d'une
+       autre exception (ex: PS.EXCM déjà à 1). C'est toujours fatal :
+       on route vers le panic C plutôt que de boucler silencieusement. */
+    DoubleExceptionVectorHandler:
         call_isr c_interrupt_handler, 1
         rfe
 

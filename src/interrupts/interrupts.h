@@ -46,6 +46,7 @@ void interrupts_init(void);
 void interrupts_enable_line(uint8_t int_num);
 void interrupts_enable_global(void);
 void interrupts_disable_global(void);
-uint32_t* c_interrupt_handler(uint32_t *sp);
+void interrupts_register_handler(uint8_t int_num, isr_handler_t handler, void *arg);
+uint32_t* c_interrupt_handler(uint32_t *sp, uint32_t level);
 
 #endif

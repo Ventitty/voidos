@@ -42,6 +42,12 @@ void interrupts_enable_line(uint8_t int_num) {
     );
 }
 
+void interrupts_register_handler(uint8_t int_num, isr_handler_t handler, void *arg) {
+    if (int_num >= 32) return;
+    isr_table[int_num].handler = handler;
+    isr_table[int_num].arg = arg;
+}
+
 void interrupts_enable_global(void) {
     __asm__ volatile (
         "rsil a2, 0\n"
@@ -73,17 +79,49 @@ static void panic_dump(const cpu_context_t *ctx) {
     }
 }
 
-uint32_t* c_interrupt_handler(uint32_t *sp) {
+static int dispatch_pending_interrupts(void) {
+    uint32_t pending, enabled;
+    __asm__ volatile ("rsr %0, interrupt"  : "=r"(pending));
+    __asm__ volatile ("rsr %0, intenable"  : "=r"(enabled));
+
+    uint32_t active = pending & enabled;
+    if (active == 0) return 0;
+
+    int handled = 0;
+    for (int i = 0; i < 32; i++) {
+        if (!(active & (1U << i))) continue;
+
+        if (isr_table[i].handler != 0) {
+            isr_table[i].handler(isr_table[i].arg);
+            handled = 1;
+        }
+
+        __asm__ volatile ("wsr %0, intclear\n rsync\n" :: "r"(1U << i));
+    }
+
+    return handled;
+}
+
+uint32_t* c_interrupt_handler(uint32_t *sp, uint32_t level) {
     cpu_context_t *ctx = (cpu_context_t *)sp;
 
-    if (ctx->exccause == EXCCAUSE_LEVEL1_INTERRUPT) {
-        #define TICK_CYCLES 240000
-        set_cpu_private_timer(0, TICK_CYCLES);
+    if (level == 1) {
+        if (ctx->exccause != EXCCAUSE_LEVEL1_INTERRUPT) {
+            panic_dump(ctx);
+            return sp;
+        }
+
+        if (!dispatch_pending_interrupts()) {
+            #define TICK_CYCLES 240000
+            set_cpu_private_timer(0, TICK_CYCLES);
+        }
 
         return sp;
     }
 
-    panic_dump(ctx);
+    if (!dispatch_pending_interrupts()) {
+        panic_dump(ctx);
+    }
 
     return sp;
 }
