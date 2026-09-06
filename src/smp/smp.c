@@ -32,17 +32,8 @@ void start_app_cpu(void) {
     uart_print("ERREUR : APP_CPU n'a pas demarre (timeout).\n");
 }
 
-static void core1_task(void) {
-    while (1) {
-        uart_print("[Tache core 1]\n");
-        for (volatile int i = 0; i < 500000; i++) { __asm__ volatile ("nop"); }
-    }
-}
-
 void app_cpu_main(void) {
     app_cpu_started = 1;
-
-    task_create_pinned(core1_task, 1);
 
     scheduler_start();
 }

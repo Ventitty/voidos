@@ -3,9 +3,7 @@
 
 #include "src/types.h"
 #include "src/kernel/kernel.h"
-
-#define EXCCAUSE_ILLEGAL_INSTRUCTION  0
-#define EXCCAUSE_LEVEL1_INTERRUPT     4
+#include "arch/xtensa_lx6/xtensa.h"
 
 typedef void (*isr_handler_t)(void *arg);
 

@@ -9,6 +9,10 @@
 #include "src/watchdog/watchdog.h"
 #include "src/smp/smp.h"
 #include "src/scheduler/scheduler.h"
+#include "src/scheduler/mutex.h"
+#include "src/scheduler/semaphore.h"
+#include "src/scheduler/cond.h"
+#include "src/scheduler/event_group.h"
 
 void uart_print(const char *str);
 void uart_print_hex(uint32_t val);
