@@ -6,8 +6,6 @@
 
 #define REG32(addr) (*(volatile uint32_t *)(addr))
 
-/* ---- RTC_CNTL (RTC Watchdog + Super Watchdog) ---------------------------- */
-
 void wdt_disable_all(void);
 
 #endif /* WATCHDOG_H */

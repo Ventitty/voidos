@@ -49,7 +49,7 @@ ${CC} -nostdlib -T ${LINKER_SCRIPT} -g -fno-tree-loop-distribute-patterns -mtext
     -mabi=call0 \
     ${INCLUDES} \
     -o ${KERNEL_ELF} \
-    ${ARCH_DIR}/boot.S ${ARCH_DIR}/vector.S ${SRC_DIR}/kernel/kernel.c ${SRC_DIR}/memory_manager/memory.c ${SRC_DIR}/interrupts/interrupts.c ${SRC_DIR}/watchdog/watchdog.c ${SRC_DIR}/utils/utils.c \
+    ${ARCH_DIR}/boot.S ${ARCH_DIR}/vector.S ${ARCH_DIR}/smp.S ${SRC_DIR}/kernel/kernel.c ${SRC_DIR}/memory_manager/memory.c ${SRC_DIR}/interrupts/interrupts.c ${SRC_DIR}/watchdog/watchdog.c ${SRC_DIR}/smp/smp.c ${SRC_DIR}/scheduler/scheduler.c ${SRC_DIR}/scheduler/spinlock.c ${SRC_DIR}/utils/utils.c \
     -lgcc
 
 echo "Succès : ${KERNEL_ELF} généré."
@@ -80,7 +80,11 @@ elif [ "$MODE" = "flash" ]; then
     esptool --chip ${CHIP} elf2image ${KERNEL_ELF} -o ${KERNEL_BIN}
 
     echo "[4/4] Flashage sur l'ESP32 (${PORT})"
-    esptool --chip ${CHIP} --port "${PORT}" --after hard_reset write_flash -fm dio 0x1000 ${KERNEL_BIN}
+    esptool --chip ${CHIP} --port "${PORT}" write_flash -fm dio 0x1000 ${KERNEL_BIN}
+
+    echo "Flash terminé !"
+    echo "Débranche/rebranche la carte (bug du circuit auto-reset), puis relance :"
+    echo "  picocom -b 115200 --noinit --noreset ${PORT}"
 else
     echo "Usage : $0 [flash|qemu] [PORT]"
     exit 1

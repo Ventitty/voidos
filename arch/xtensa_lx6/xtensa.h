@@ -22,8 +22,6 @@
 #define RTC_CNTL_WDTWPROTECT_REG  0x3FF480A4u   /* était (par erreur) 0x...0A8 */
 #define RTC_CNTL_WDT_WKEY         0x50D83AA1u
 
-/* ---- TIMG0 / TIMG1 (Main System Watchdogs) -------------------------------
- * Ces offsets-là étaient déjà corrects dans la version précédente. */
 #define TIMG0_WDTCONFIG0_REG      0x3FF5F048u
 #define TIMG0_WDTFEED_REG         0x3FF5F060u
 #define TIMG0_WDTWPROTECT_REG     0x3FF5F064u
@@ -33,5 +31,24 @@
 #define TIMG1_WDTWPROTECT_REG     0x3FF60064u
 
 #define WDT_FEED_MAGIC            0xABAD1DEAu
+
+#define REG32(addr) (*(volatile uint32_t *)(addr))
+
+#define DPORT_APPCPU_CTRL_A_REG   0x3FF0002Cu   /* bit0 = APPCPU_RESETTING   */
+#define DPORT_APPCPU_CTRL_B_REG   0x3FF00030u   /* bit0 = APPCPU_CLKGATE_EN  */
+#define DPORT_APPCPU_CTRL_C_REG   0x3FF00034u   /* bit0 = APPCPU_RUNSTALL (1=stall) */
+#define DPORT_APPCPU_CTRL_D_REG   0x3FF00038u   /* adresse de boot (32 bits) */
+
+#define DPORT_APPCPU_RESETTING    (1u << 0)
+#define DPORT_APPCPU_CLKGATE_EN   (1u << 0)
+#define DPORT_APPCPU_RUNSTALL     (1u << 0)
+
+#define RTC_CNTL_OPTIONS0_REG        0x3FF48000u
+#define RTC_CNTL_SW_CPU_STALL_REG    0x3FF480ACu
+
+#define RTC_CNTL_SW_STALL_APPCPU_C0_S   0
+#define RTC_CNTL_SW_STALL_APPCPU_C0_M   (0x3u << RTC_CNTL_SW_STALL_APPCPU_C0_S)
+#define RTC_CNTL_SW_STALL_APPCPU_C1_S   20
+#define RTC_CNTL_SW_STALL_APPCPU_C1_M   (0x3Fu << RTC_CNTL_SW_STALL_APPCPU_C1_S)
 
 #endif /* XTENSA_H */

@@ -3,7 +3,7 @@
 extern char _vector_base[];
 static isr_entry_t isr_table[32];
 
-void interrupts_init(void) {
+void interrupts_init_this_core(void) {
     uint32_t vecbase = (uint32_t)_vector_base;
     __asm__ volatile (
         "wsr %0, vecbase\n"
@@ -22,6 +22,10 @@ void interrupts_init(void) {
         "rsync\n"
         :: "r"(0xFFFFFFFF)
     );
+}
+
+void interrupts_init(void) {
+    interrupts_init_this_core();
 
     for (int i = 0; i < 32; i++) {
         isr_table[i].handler = 0;
@@ -114,6 +118,7 @@ uint32_t* c_interrupt_handler(uint32_t *sp, uint32_t level) {
         if (!dispatch_pending_interrupts()) {
             #define TICK_CYCLES 240000
             set_cpu_private_timer(0, TICK_CYCLES);
+            return schedule_next_task(sp);
         }
 
         return sp;

@@ -43,6 +43,7 @@ extern void set_cpu_private_timer(uint32_t timer_id, uint32_t cycles);
 extern uint32_t* schedule_next_task(uint32_t *current_sp);
 
 void interrupts_init(void);
+void interrupts_init_this_core(void);
 void interrupts_enable_line(uint8_t int_num);
 void interrupts_enable_global(void);
 void interrupts_disable_global(void);

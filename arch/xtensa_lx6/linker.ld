@@ -45,5 +45,6 @@ SECTIONS
   _heap_start = .;
 
   _stack_top = ORIGIN(dram0_0_seg) + LENGTH(dram0_0_seg);
-  _heap_end   = _stack_top - 0x4000;
+  _stack_top_cpu1 = _stack_top - 0x4000;
+  _heap_end = _stack_top_cpu1 - 0x2000;
 }
