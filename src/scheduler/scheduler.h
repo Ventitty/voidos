@@ -5,8 +5,6 @@
 #include "src/interrupts/interrupts.h"
 #include "src/memory_manager/memory.h"
 #include "src/scheduler/spinlock.h"
-#include "src/kernel/kernel.h"
-#include "arch/xtensa_lx6/xtensa.h"
 
 typedef enum {
     TASK_UNUSED = 0,
