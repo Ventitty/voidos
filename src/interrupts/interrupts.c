@@ -110,7 +110,25 @@ uint32_t* c_interrupt_handler(uint32_t *sp, uint32_t level) {
     cpu_context_t *ctx = (cpu_context_t *)sp;
 
     if (level == 1) {
+        if (ctx->exccause == EXCCAUSE_SYSCALL) {
+            return handle_syscall(ctx);
+        }
+
         if (ctx->exccause != EXCCAUSE_LEVEL1_INTERRUPT) {
+            uart_print("[diag] EXCCAUSE="); uart_print_hex(ctx->exccause);
+            uart_print(" PS="); uart_print_hex(ctx->ps);
+            uart_print(" EPC="); uart_print_hex(ctx->epc);
+            uart_print("\n");
+
+            int was_user_mode = (ctx->ps & PS_UM_MASK) != 0;
+            if (was_user_mode) {
+                uart_print("[noyau] tache user terminee (EXCCAUSE=");
+                uart_print_hex(ctx->exccause);
+                uart_print(", EPC="); uart_print_hex(ctx->epc);
+                uart_print(")\n");
+                return scheduler_terminate_current(sp);
+            }
+
             panic_dump(ctx);
             return sp;
         }

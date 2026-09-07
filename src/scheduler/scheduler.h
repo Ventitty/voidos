@@ -25,8 +25,14 @@ typedef struct task {
 void scheduler_init(void);
 int task_create(void (*entry)(void));
 int task_create_pinned(void (*entry)(void), uint8_t core);
+
+int task_create_user(void (*entry)(void));
+int task_create_user_pinned(void (*entry)(void), uint8_t core);
+
 void scheduler_start(void);
 uint32_t *schedule_next_task(uint32_t *current_sp);
+
+uint32_t *scheduler_terminate_current(uint32_t *sp);
 uint32_t get_core_id(void);
 int  scheduler_current_task_id(void);
 void scheduler_block_current(void);

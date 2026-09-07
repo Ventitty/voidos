@@ -56,6 +56,25 @@ void echo(void) {
     }
 }
 
+static mutex_t demo_print_mutex = MUTEX_INIT;
+
+static void safe_sys_print(const char *str) {
+    mutex_lock(&demo_print_mutex);
+    sys_print(str);
+    mutex_unlock(&demo_print_mutex);
+}
+
+static void user_task_good(void) {
+    for (int i = 0; i < 5; i++) {
+        safe_sys_print("[user] tache bien elevee, tour ");
+        char digit[2] = { (char)('0' + i), '\0' };
+        safe_sys_print(digit);
+        safe_sys_print("\n");
+        sys_yield();
+    }
+    sys_exit();
+}
+
 void kernel_main(void) {
     wdt_disable_all();
     mm_init();
@@ -64,6 +83,7 @@ void kernel_main(void) {
     start_app_cpu();
 
     task_create(echo);
+    task_create_user(user_task_good);
 
     scheduler_start();
 }

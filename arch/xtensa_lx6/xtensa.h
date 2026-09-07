@@ -52,7 +52,12 @@
 #define RTC_CNTL_SW_STALL_APPCPU_C1_M   (0x3Fu << RTC_CNTL_SW_STALL_APPCPU_C1_S)
 
 #define EXCCAUSE_ILLEGAL_INSTRUCTION  0
+#define EXCCAUSE_SYSCALL              1
 #define EXCCAUSE_LEVEL1_INTERRUPT     4
+#define EXCCAUSE_PRIVILEGED           8
+
+/* PS.UM (User Mode) : bit 5, vérifié contre xtensa/corebits.h officiel. */
+#define PS_UM_MASK 0x00000020u
 
 #define TICK_CYCLES 240000
 #define TIMER0_IRQ_LINE 6

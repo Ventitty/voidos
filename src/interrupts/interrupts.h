@@ -38,6 +38,8 @@ extern void uart_print(const char *str);
 extern void uart_print_hex(uint32_t val);
 extern void set_cpu_private_timer(uint32_t timer_id, uint32_t cycles);
 extern uint32_t* schedule_next_task(uint32_t *current_sp);
+extern uint32_t* scheduler_terminate_current(uint32_t *sp);
+extern uint32_t* handle_syscall(cpu_context_t *ctx);
 
 void interrupts_init(void);
 void interrupts_init_this_core(void);

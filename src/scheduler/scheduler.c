@@ -44,7 +44,7 @@ void scheduler_init(void) {
     current_task_idx[1] = -1;
 }
 
-static int task_create_common(void (*entry)(void), uint8_t pinned_core) {
+static int task_create_common(void (*entry)(void), uint8_t pinned_core, int user_mode) {
     spinlock_acquire(&tasks_lock);
 
     int slot = -1;
@@ -77,6 +77,9 @@ static int task_create_common(void (*entry)(void), uint8_t pinned_core) {
 
     uint32_t ps;
     __asm__ volatile ("rsr %0, ps" : "=r"(ps));
+    if (user_mode) {
+        ps |= 0x00000020u;
+    }
     ctx->ps = ps;
 
     tasks[slot].sp          = (uint32_t *)ctx;
@@ -90,12 +93,21 @@ static int task_create_common(void (*entry)(void), uint8_t pinned_core) {
 }
 
 int task_create(void (*entry)(void)) {
-    return task_create_common(entry, TASK_ANY_CORE);
+    return task_create_common(entry, TASK_ANY_CORE, 0);
 }
 
 int task_create_pinned(void (*entry)(void), uint8_t core) {
     if (core > 1) return -1;
-    return task_create_common(entry, core);
+    return task_create_common(entry, core, 0);
+}
+
+int task_create_user(void (*entry)(void)) {
+    return task_create_common(entry, TASK_ANY_CORE, 1);
+}
+
+int task_create_user_pinned(void (*entry)(void), uint8_t core) {
+    if (core > 1) return -1;
+    return task_create_common(entry, core, 1);
 }
 
 static inline int task_eligible_for(const task_t *t, uint32_t core) {
@@ -185,6 +197,19 @@ void scheduler_unblock(int task_id) {
         tasks[task_id].state = TASK_READY;
     }
     spinlock_release(&tasks_lock);
+}
+
+uint32_t *scheduler_terminate_current(uint32_t *sp) {
+    uint32_t core = get_core_id();
+
+    spinlock_acquire(&tasks_lock);
+    int cur = current_task_idx[core];
+    if (cur >= 0) {
+        tasks[cur].state = TASK_UNUSED;
+    }
+    spinlock_release(&tasks_lock);
+
+    return schedule_next_task(sp);
 }
 
 void scheduler_start(void) {
