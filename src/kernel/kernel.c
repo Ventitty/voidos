@@ -30,6 +30,7 @@ void echo(void) {
     UART0_INT_CLR_REG = UART_RX_ERROR_MASK;
 
     uart_print("Input > ");
+    led_toggle();
 
     while (1) {
         uint32_t int_st = UART0_INT_ST_REG;
@@ -47,6 +48,7 @@ void echo(void) {
                 uart_putchar('\r');
                 uart_putchar('\n');
                 uart_print("Input > ");
+                led_toggle();
             } else if (c == '\b' || c == 0x7F) {
                 uart_print("\b \b");
             } else {
@@ -81,6 +83,7 @@ void kernel_main(void) {
     interrupts_init();
     scheduler_init();
     start_app_cpu();
+    led_init();
 
     task_create(echo);
     task_create_user(user_task_good);
