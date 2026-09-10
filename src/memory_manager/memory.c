@@ -38,9 +38,9 @@ void *nmap(size_t size) {
 
     while (iter_free != NULL) {
         if (iter_free->free && iter_free->size >= size) {
-            if (iter_free->size >= (total_size - HEADER_SIZE)) {
+            if (iter_free->size > total_size) {
                 block_t *rest = (block_t *)((uint8_t *) iter_free + total_size);
-                rest->size = iter_free->size - size - HEADER_SIZE;
+                rest->size = iter_free->size - total_size;
                 rest->free = 1;
                 rest->next = iter_free->next;
 

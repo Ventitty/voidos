@@ -1,7 +1,9 @@
 #include "src/interrupts/interrupts.h"
+#include "src/scheduler/spinlock.h"
 
 extern char _vector_base[];
 static isr_entry_t isr_table[32];
+static spinlock_t panic_print_lock = SPINLOCK_INIT;
 
 void interrupts_init_this_core(void) {
     uint32_t vecbase = (uint32_t)_vector_base;
@@ -67,6 +69,8 @@ void interrupts_disable_global(void) {
 }
 
 static void panic_dump(const cpu_context_t *ctx) {
+    spinlock_acquire(&panic_print_lock);   /* jamais relâché : un panic est terminal, voir plus bas */
+
     uart_print("\n================ PANIC KERNEL ================\n");
     uart_print(" EXCEPTION FATALE : Cause = "); uart_print_hex(ctx->exccause); uart_print("\n");
     uart_print(" EPC  (PC fautif) : "); uart_print_hex(ctx->epc); uart_print("\n");
@@ -77,6 +81,8 @@ static void panic_dump(const cpu_context_t *ctx) {
     uart_print("   a1 (Stack Orig)  : "); uart_print_hex(ctx->sp_orig); uart_print("\n");
     uart_print("   a2 : "); uart_print_hex(ctx->a2); uart_print(" | a3 : "); uart_print_hex(ctx->a3); uart_print("\n");
     uart_print("==============================================\n");
+
+    spinlock_release(&panic_print_lock);   /* libère APRES l'affichage : si l'autre coeur panique aussi, il pourra afficher son propre diagnostic au lieu de rester bloqué en silence sur ce verrou */
 
     while (1) {
         __asm__ volatile ("waiti 0");
@@ -115,10 +121,12 @@ uint32_t* c_interrupt_handler(uint32_t *sp, uint32_t level) {
         }
 
         if (ctx->exccause != EXCCAUSE_LEVEL1_INTERRUPT) {
+            spinlock_acquire(&panic_print_lock);
             uart_print("[diag] EXCCAUSE="); uart_print_hex(ctx->exccause);
             uart_print(" PS="); uart_print_hex(ctx->ps);
             uart_print(" EPC="); uart_print_hex(ctx->epc);
             uart_print("\n");
+            spinlock_release(&panic_print_lock);
 
             int was_user_mode = (ctx->ps & PS_UM_MASK) != 0;
             if (was_user_mode) {
