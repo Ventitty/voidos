@@ -18,6 +18,9 @@
 #include "src/drivers/esp32_gpio/gpio.h"
 #include "src/drivers/esp32_spi/spi.h"
 #include "src/drivers/esp32_sdcard/sdcard.h"
+#include "src/file_system/ramfs/ramfs.h"
+#include "src/file_system/devfs/devfs.h"
+#include "src/file_system/fat32/fat32.h"
 
 void uart_print(const char *str);
 void uart_print_hex(uint32_t val);

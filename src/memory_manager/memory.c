@@ -33,7 +33,7 @@ void *nmap(size_t size) {
         return NULL;
     }
 
-    size_t total_size = ALIGN_UP(size + HEADER_SIZE, 64);
+    size_t total_size = ALIGN_UP(size + HEADER_SIZE, 128);
     block_t *iter_free = alloc_list;
 
     while (iter_free != NULL) {
