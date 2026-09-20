@@ -21,6 +21,7 @@
 #include "src/file_system/ramfs/ramfs.h"
 #include "src/file_system/devfs/devfs.h"
 #include "src/file_system/fat32/fat32.h"
+#include "src/loader/elf_loader.h"
 
 void uart_print(const char *str);
 void uart_print_hex(uint32_t val);

@@ -49,7 +49,7 @@ ${CC} -nostdlib -T ${LINKER_SCRIPT} -g -fno-tree-loop-distribute-patterns -mtext
     -mabi=call0 \
     ${INCLUDES} \
     -o ${KERNEL_ELF} \
-    ${ARCH_DIR}/boot.S ${ARCH_DIR}/vector.S ${ARCH_DIR}/smp.S ${SRC_DIR}/kernel/kernel.c ${SRC_DIR}/memory_manager/memory.c ${SRC_DIR}/interrupts/interrupts.c ${SRC_DIR}/watchdog/watchdog.c ${SRC_DIR}/smp/smp.c ${SRC_DIR}/scheduler/scheduler.c ${SRC_DIR}/scheduler/spinlock.c ${SRC_DIR}/scheduler/mutex.c ${SRC_DIR}/scheduler/semaphore.c ${SRC_DIR}/scheduler/cond.c ${SRC_DIR}/scheduler/event_group.c ${SRC_DIR}/utils/utils.c ${SRC_DIR}/syscall/syscall.c ${SRC_DIR}/drivers/esp32_gpio/gpio.c ${SRC_DIR}/drivers/esp32_led/led.c ${SRC_DIR}/drivers/esp32_dma/dma.c ${SRC_DIR}/drivers/esp32_spi/spi.c ${SRC_DIR}/drivers/esp32_sdcard/sdcard.c ${SRC_DIR}/file_system/ramfs/ramfs.c ${SRC_DIR}/file_system/devfs/devfs.c ${SRC_DIR}/file_system/fat32/fat32.c \
+    ${ARCH_DIR}/boot.S ${ARCH_DIR}/vector.S ${ARCH_DIR}/smp.S ${SRC_DIR}/kernel/kernel.c ${SRC_DIR}/memory_manager/memory.c ${SRC_DIR}/interrupts/interrupts.c ${SRC_DIR}/watchdog/watchdog.c ${SRC_DIR}/smp/smp.c ${SRC_DIR}/scheduler/scheduler.c ${SRC_DIR}/scheduler/spinlock.c ${SRC_DIR}/scheduler/mutex.c ${SRC_DIR}/scheduler/semaphore.c ${SRC_DIR}/scheduler/cond.c ${SRC_DIR}/scheduler/event_group.c ${SRC_DIR}/utils/utils.c ${SRC_DIR}/syscall/syscall.c ${SRC_DIR}/drivers/esp32_gpio/gpio.c ${SRC_DIR}/drivers/esp32_led/led.c ${SRC_DIR}/drivers/esp32_dma/dma.c ${SRC_DIR}/drivers/esp32_spi/spi.c ${SRC_DIR}/drivers/esp32_sdcard/sdcard.c ${SRC_DIR}/file_system/ramfs/ramfs.c ${SRC_DIR}/file_system/devfs/devfs.c ${SRC_DIR}/file_system/fat32/fat32.c ${SRC_DIR}/loader/elf_loader.c \
     -lgcc
 
 echo "Succès : ${KERNEL_ELF} généré."

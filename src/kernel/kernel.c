@@ -71,6 +71,39 @@ void echo(void) {
     }
 }
 
+#define SD_SCLK 18
+#define SD_MOSI 23
+#define SD_MISO 19
+#define SD_CS   5
+
+#define ELF_PROGRAM_PATH "/bin/PROG.ELF"
+
+static void elf_exec_task(void) {
+    uart_print("[elf-run] init carte SD...\n");
+    if (sd_init(SD_SCLK, SD_MOSI, SD_MISO, SD_CS) != 0) {
+        uart_print("[elf-run] ECHEC : init carte SD\n");
+        while (1) { __asm__ volatile ("waiti 0"); }
+    }
+
+    uart_print("[elf-run] montage FAT32...\n");
+    if (fat32_mount() != 0) {
+        uart_print("[elf-run] ECHEC : montage FAT32 (carte formatee en FAT32 ?)\n");
+        while (1) { __asm__ volatile ("waiti 0"); }
+    }
+
+    elf_loader_print_layout();
+
+    uart_print("[elf-run] contenu de la racine de la carte :\n");
+    fat32_ls("/");
+
+    uart_print("[elf-run] execution de "); uart_print(ELF_PROGRAM_PATH); uart_print("...\n");
+    if (elf_exec(ELF_PROGRAM_PATH) < 0) {
+        uart_print("[elf-run] ECHEC : voir les messages [elf] ci-dessus\n");
+    }
+
+    while (1) { __asm__ volatile ("waiti 0"); }
+}
+
 void kernel_main(void) {
     wdt_disable_all();
     mm_init();
@@ -85,6 +118,7 @@ void kernel_main(void) {
     uart_fs_bootstrap();
 
     task_create(echo);
+    task_create(elf_exec_task);
 
     scheduler_start();
 }

@@ -2,9 +2,12 @@ ENTRY(_ResetVector)
 
 MEMORY
 {
-  iram0_0_seg (RX) : ORIGIN = 0x40080000, LENGTH = 0x20000  /* 128 Ko IRAM */
+  iram0_0_seg (RX) : ORIGIN = 0x40080000, LENGTH = 0x18000  /* 96 Ko IRAM noyau */
   dram0_0_seg (RW) : ORIGIN = 0x3FFB0000, LENGTH = 0x30000  /* 192 Ko DRAM */
 }
+
+_user_iram_base = 0x40080000 + 0x18000;
+_user_iram_size = 0x8000;
 
 SECTIONS
 {
@@ -12,9 +15,7 @@ SECTIONS
   {
     _stext = .;
     KEEP(*(.iram0.entry))
-    *(.iram0.text*)
-    *(.text*)
-    *(.literal*)
+    *(.iram0.literal .iram0.text* .literal .literal.* .text .text.*)
     _etext = .;
   } > iram0_0_seg
 
@@ -46,5 +47,9 @@ SECTIONS
 
   _stack_top = ORIGIN(dram0_0_seg) + LENGTH(dram0_0_seg);
   _stack_top_cpu1 = _stack_top - 0x4000;
-  _heap_end = _stack_top_cpu1 - 0x2000;
+
+  _user_dram_size = 0x4000;
+  _user_dram_base = _stack_top_cpu1 - 0x2000 - _user_dram_size;
+
+  _heap_end = _user_dram_base;
 }
