@@ -1,4 +1,5 @@
 #include "src/memory_manager/memory.h"
+#include "src/scheduler/spinlock.h"
 
 extern uint8_t _heap_start[];
 extern uint8_t _heap_end[];
@@ -6,12 +7,16 @@ extern uint8_t _heap_end[];
 static void *_heap_current = NULL;
 static block_t *alloc_list = NULL;
 
+static spinlock_t mm_lock = SPINLOCK_INIT;
+
 void  mm_init(void) {
+    spinlock_acquire(&mm_lock);
     _heap_current = _heap_start;
     alloc_list = NULL;
+    spinlock_release(&mm_lock);
 }
 
-void *sbrk(size_t size) {
+static void *sbrk_locked(size_t size) {
     if (size == 0) {
         return NULL;
     }
@@ -28,12 +33,22 @@ void *sbrk(size_t size) {
     return NULL;
 }
 
+void *sbrk(size_t size) {
+    spinlock_acquire(&mm_lock);
+    void *ptr = sbrk_locked(size);
+    spinlock_release(&mm_lock);
+    return ptr;
+}
+
 void *nmap(size_t size) {
     if (size == 0) {
         return NULL;
     }
 
     size_t total_size = ALIGN_UP(size + HEADER_SIZE, 128);
+
+    spinlock_acquire(&mm_lock);
+
     block_t *iter_free = alloc_list;
 
     while (iter_free != NULL) {
@@ -50,13 +65,14 @@ void *nmap(size_t size) {
 
             iter_free->free = 0;
             void * res = (uint8_t *) iter_free + HEADER_SIZE;
+            spinlock_release(&mm_lock);
             return res;
         }
 
         iter_free = iter_free->next;
     }
 
-    block_t *new_alloc = sbrk(total_size);
+    block_t *new_alloc = sbrk_locked(total_size);
     if (new_alloc != NULL) {
         new_alloc->size = total_size - HEADER_SIZE;
         new_alloc->free = 0;
@@ -75,9 +91,11 @@ void *nmap(size_t size) {
         }
 
         void * res = (uint8_t *) new_alloc + HEADER_SIZE;
+        spinlock_release(&mm_lock);
         return res;
     }
 
+    spinlock_release(&mm_lock);
     return NULL;
 }
 
@@ -85,6 +103,8 @@ void unmap(void *ptr) {
     if (ptr == NULL) {
         return;
     }
+
+    spinlock_acquire(&mm_lock);
 
     block_t *b = (block_t *)((uint8_t *) ptr - HEADER_SIZE);
     b->free = 1;
@@ -99,4 +119,5 @@ void unmap(void *ptr) {
         }
     }
 
+    spinlock_release(&mm_lock);
 }

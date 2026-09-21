@@ -6,6 +6,9 @@
 #include "src/memory_manager/memory.h"
 #include "src/scheduler/spinlock.h"
 
+#define STACK_FILL        0xA5A5A5A5u
+#define STACK_GUARD_BYTES 32u
+
 typedef enum {
     TASK_UNUSED = 0,
     TASK_READY,
@@ -39,5 +42,7 @@ void scheduler_block_current(void);
 void scheduler_unblock(int task_id);
 int  scheduler_mark_blocked_self(void);
 void scheduler_yield_blocked(int me);
+
+uint32_t scheduler_stack_unused(int task_id);
 
 #endif /* SCHEDULER_H */

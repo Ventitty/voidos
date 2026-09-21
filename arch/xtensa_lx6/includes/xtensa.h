@@ -63,7 +63,16 @@
 #define TIMER0_IRQ_LINE 6
 
 #define MAX_TASKS         16
-#define TASK_STACK_SIZE   2048
+/* Pile de chaque tâche. Pire consommation mesurée (analyse statique
+ * -fstack-usage + graphe d'appels, voir le détail dans l'historique) :
+ *   - tâche montant la carte SD (fat32_ls -> dir_find -> fat_entry_get,
+ *     chacune avec un tampon de secteur de 512 octets) : ~2400 octets ;
+ *   - + une interruption tombant au pire moment, qui s'exécute SUR la pile
+ *     de la tâche interrompue : ~350 octets ;
+ *   - syscall lisant la carte SD : ~2000 octets + la pile du programme.
+ * 2048 débordait donc déjà ; 4096 laisse ~1,3 Ko de marge au pire cas
+ * actuel. Un débordement est désormais DETECTE (voir scheduler.c). */
+#define TASK_STACK_SIZE   4096
 
 #define TASK_ANY_CORE 0xFFu
 

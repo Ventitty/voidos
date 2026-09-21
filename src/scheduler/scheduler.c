@@ -7,6 +7,48 @@ static volatile int current_task_idx[2] = { -1, -1 };
 
 static int global_cursor = -1;
 
+static void stack_overflow_halt(int task_id, uint32_t sp) {
+    uart_print("\n[noyau] DEBORDEMENT DE PILE : tache ");
+    uart_print_hex((uint32_t)task_id);
+    uart_print(", sp=");
+    uart_print_hex(sp);
+    uart_print(", pile=");
+    uart_print_hex((uint32_t)tasks[task_id].stack);
+    uart_print(" (TASK_STACK_SIZE trop petit, ou recursion)\n");
+    uart_print("[noyau] coeur arrete : la memoire voisine a pu etre corrompue.\n");
+
+    uint32_t ps;
+    __asm__ volatile ("rsil %0, 15" : "=r"(ps) :: "memory");
+    (void)ps;
+    while (1) { }
+}
+
+static void stack_check_outgoing(int cur, uint32_t *current_sp) {
+    if (cur < 0 || tasks[cur].state == TASK_UNUSED) return;
+
+    uint32_t base = (uint32_t)tasks[cur].stack;
+    if ((uint32_t)current_sp < base + STACK_GUARD_BYTES) {
+        stack_overflow_halt(cur, (uint32_t)current_sp);
+    }
+
+    const volatile uint32_t *guard = (const volatile uint32_t *)base;
+    for (uint32_t i = 0; i < STACK_GUARD_BYTES / 4u; i++) {
+        if (guard[i] != STACK_FILL) {
+            stack_overflow_halt(cur, (uint32_t)current_sp);
+        }
+    }
+}
+
+uint32_t scheduler_stack_unused(int task_id) {
+    if (task_id < 0 || task_id >= MAX_TASKS) return 0;
+    if (tasks[task_id].state == TASK_UNUSED || tasks[task_id].stack == NULL) return 0;
+
+    const volatile uint32_t *p = (const volatile uint32_t *)tasks[task_id].stack;
+    uint32_t words = TASK_STACK_SIZE / 4u, n = 0;
+    while (n < words && p[n] == STACK_FILL) n++;
+    return n * 4u;
+}
+
 uint32_t get_core_id(void) {
     uint32_t prid;
     __asm__ volatile ("rsr.prid %0" : "=r"(prid));
@@ -65,9 +107,10 @@ static int task_create_common(void (*entry)(void), uint8_t pinned_core, int user
         return -1;
     }
 
-    uint8_t *stack_top = (uint8_t *)stack + TASK_STACK_SIZE;
+    uint8_t *stack_top = (uint8_t *)(((uint32_t)stack + TASK_STACK_SIZE) & ~0xFu);
     cpu_context_t *ctx = (cpu_context_t *)(stack_top - sizeof(cpu_context_t));
 
+    for (uint32_t *p = (uint32_t *)stack; p < (uint32_t *)ctx; p++) *p = STACK_FILL;
     for (uint32_t *p = (uint32_t *)ctx; p < (uint32_t *)stack_top; p++) *p = 0;
 
     ctx->sp_orig  = (uint32_t)stack_top;
@@ -116,6 +159,8 @@ static inline int task_eligible_for(const task_t *t, uint32_t core) {
 
 uint32_t *schedule_next_task(uint32_t *current_sp) {
     uint32_t core = get_core_id();
+
+    stack_check_outgoing(current_task_idx[core], current_sp);
 
     spinlock_acquire(&tasks_lock);
 
