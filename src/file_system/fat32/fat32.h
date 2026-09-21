@@ -2,7 +2,7 @@
 #define FAT32_H
 
 #include "src/types.h"
-#include "src/drivers/esp32_sdcard/sdcard.h"
+#include "arch/xtensa_lx6/drivers/esp32_sdcard/sdcard.h"
 #include "src/memory_manager/memory.h"
 #include "src/utils/utils.h"
 #include "src/scheduler/spinlock.h"

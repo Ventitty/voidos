@@ -1,4 +1,4 @@
-#include "src/drivers/esp32_dma/dma.h"
+#include "arch/xtensa_lx6/drivers/esp32_dma/dma.h"
 
 void dma_desc_init(dma_desc_t *desc, const uint8_t *buf, uint32_t len, int eof) {
     uint32_t ctrl = (len & DMA_DESC_SIZE_M) | ((len << DMA_DESC_LENGTH_S) & DMA_DESC_LENGTH_M);

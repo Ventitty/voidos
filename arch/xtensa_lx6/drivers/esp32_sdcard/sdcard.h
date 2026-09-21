@@ -2,7 +2,7 @@
 #define SDCARD_H
 
 #include "src/types.h"
-#include "src/drivers/esp32_spi/spi.h"
+#include "arch/xtensa_lx6/drivers/esp32_spi/spi.h"
 
 #define SD_BLOCK_SIZE 512u
 

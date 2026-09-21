@@ -1,5 +1,5 @@
-#include "src/drivers/esp32_sdcard/sdcard.h"
-#include "src/drivers/esp32_gpio/gpio.h"
+#include "arch/xtensa_lx6/drivers/esp32_sdcard/sdcard.h"
+#include "arch/xtensa_lx6/drivers/esp32_gpio/gpio.h"
 #include "src/memory_manager/memory.h"
 #include "src/utils/utils.h"
 

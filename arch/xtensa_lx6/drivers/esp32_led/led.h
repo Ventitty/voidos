@@ -1,7 +1,7 @@
 #ifndef LED_H
 #define LED_H
 
-#include "src/drivers/esp32_gpio/gpio.h"
+#include "arch/xtensa_lx6/drivers/esp32_gpio/gpio.h"
 
 #define LED_PIN 2
 

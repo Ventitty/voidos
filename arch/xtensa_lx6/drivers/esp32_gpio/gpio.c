@@ -1,4 +1,4 @@
-#include "src/drivers/esp32_gpio/gpio.h"
+#include "arch/xtensa_lx6/drivers/esp32_gpio/gpio.h"
 #include "src/interrupts/interrupts.h"
 
 #define REG32(addr) (*(volatile uint32_t *)(addr))

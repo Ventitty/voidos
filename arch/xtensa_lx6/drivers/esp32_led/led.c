@@ -1,4 +1,4 @@
-#include "src/drivers/esp32_led/led.h"
+#include "arch/xtensa_lx6/drivers/esp32_led/led.h"
 
 static int led_state = 0;
 
