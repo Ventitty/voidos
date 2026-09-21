@@ -2,7 +2,7 @@
 #define INTERRUPTS_H
 
 #include "src/types.h"
-#include "arch/xtensa_lx6/xtensa.h"
+#include "arch/xtensa_lx6/includes/xtensa.h"
 
 typedef void (*isr_handler_t)(void *arg);
 

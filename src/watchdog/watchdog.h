@@ -2,7 +2,7 @@
 #define WATCHDOG_H
 
 #include "src/types.h"
-#include "arch/xtensa_lx6/xtensa.h"
+#include "arch/xtensa_lx6/includes/xtensa.h"
 
 #define REG32(addr) (*(volatile uint32_t *)(addr))
 

@@ -4,7 +4,7 @@
 #include "src/types.h"
 #include "src/scheduler/spinlock.h"
 #include "src/scheduler/scheduler.h"
-#include "arch/xtensa_lx6/xtensa.h"
+#include "arch/xtensa_lx6/includes/xtensa.h"
 
 typedef struct {
     spinlock_t lock;

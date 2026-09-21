@@ -3,7 +3,7 @@
 
 #include "src/types.h"
 #include "src/memory_manager/memory.h"
-#include "arch/xtensa_lx6/xtensa.h"
+#include "arch/xtensa_lx6/includes/xtensa.h"
 #include "src/utils/utils.h"
 #include "src/interrupts/interrupts.h"
 #include "src/watchdog/watchdog.h"
