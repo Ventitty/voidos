@@ -43,9 +43,17 @@ void mutex_lock(mutex_t *m) {
             m->waitq_tail = (m->waitq_tail + 1) % MAX_TASKS;
             m->waitq_count++;
         }
+        /* Se marquer bloqué PENDANT qu'on tient encore le verrou : c'est le
+         * seul moyen de ne pas perdre un réveil. En relâchant d'abord, un
+         * mutex_unlock() concurrent pouvait nous retirer de la file et appeler
+         * scheduler_unblock() sur une tâche pas encore marquée bloquée --
+         * sans effet. On se bloquait juste après, pour toujours. Même
+         * ordre que cond_wait(). */
+        scheduler_mark_blocked_self();
         spinlock_release(&m->lock);
 
-        scheduler_block_current();
+        /* Attente effective, hors verrou. */
+        scheduler_yield_blocked(me);
     }
 }
 

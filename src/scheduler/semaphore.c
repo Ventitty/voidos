@@ -43,22 +43,37 @@ void sem_wait(semaphore_t *s) {
             s->waitq_tail = (s->waitq_tail + 1) % MAX_TASKS;
             s->waitq_count++;
         }
+        /* Se marquer bloqué PENDANT qu'on tient encore le verrou : c'est le
+         * seul moyen de ne pas perdre un réveil. En relâchant d'abord, un
+         * sem_post() concurrent pouvait nous retirer de la file et appeler
+         * scheduler_unblock() sur une tâche pas encore marquée bloquée --
+         * sans effet. On se bloquait juste après, pour toujours. Même
+         * ordre que cond_wait(). */
+        scheduler_mark_blocked_self();
         spinlock_release(&s->lock);
 
-        scheduler_block_current();
+        /* Attente effective, hors verrou. */
+        scheduler_yield_blocked(me);
     }
 }
 
 void sem_post(semaphore_t *s) {
     spinlock_acquire(&s->lock);
 
+    /* Le compteur est incrémenté DANS TOUS LES CAS, y compris quand on
+     * réveille un dormeur. L'ancienne version lui "transmettait" le jeton
+     * sans toucher au compteur, mais la tâche réveillée repasse par le
+     * début de sem_wait() et revérifie le compteur : elle le trouvait à
+     * zéro et se rendormait aussitôt, définitivement. Le jeton était
+     * perdu. Contrepartie : une tâche tierce peut consommer le jeton avant
+     * la réveillée (pas de FIFO strict), mais aucun jeton ne se perd. */
+    s->count++;
+
     int wake = -1;
     if (s->waitq_count > 0) {
         wake = s->waitq[s->waitq_head];
         s->waitq_head = (s->waitq_head + 1) % MAX_TASKS;
         s->waitq_count--;
-    } else {
-        s->count++;
     }
 
     spinlock_release(&s->lock);

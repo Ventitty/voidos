@@ -59,7 +59,7 @@ void *nmap(size_t size) {
                 rest->free = 1;
                 rest->next = iter_free->next;
 
-                iter_free->size = size;
+                iter_free->size = total_size - HEADER_SIZE;
                 iter_free->next = rest;
             }
 
