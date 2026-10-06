@@ -9,6 +9,7 @@
 #include "src/watchdog/watchdog.h"
 #include "src/smp/smp.h"
 #include "src/scheduler/scheduler.h"
+#include "src/scheduler/spinlock.h"
 #include "src/scheduler/mutex.h"
 #include "src/scheduler/semaphore.h"
 #include "src/scheduler/cond.h"

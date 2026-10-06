@@ -1,178 +1,271 @@
 #include "src/loader/elf_loader.h"
+#include "src/memory_manager/memory.h"
+#include "src/scheduler/spinlock.h"
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24)); }
 
-void elf_loader_print_layout(void) {
-    uart_print("[elf] user_iram_base="); uart_print_hex((uint32_t)&_user_iram_base);
-    uart_print(" size="); uart_print_hex((uint32_t)&_user_iram_size); uart_print("\n");
-    uart_print("[elf] user_dram_base="); uart_print_hex((uint32_t)&_user_dram_base);
-    uart_print(" size="); uart_print_hex((uint32_t)&_user_dram_size); uart_print("\n");
-}
+typedef struct {
+    void *handle;
+    int (*read)(void *h, void *buf, uint32_t len);
+    int (*seek)(void *h, int32_t off, int whence);
+    void (*close)(void *h);
+} elf_src_t;
 
-static int load_segment(fat32_file_t *f, uint8_t *dst, uint32_t filesz, uint32_t memsz) {
-    if (((uint32_t)dst & 3u) != 0) {
-        uart_print("[elf] REFUS : adresse de segment non alignee sur 4\n");
-        return -1;
+static int  src_fat_read(void *h, void *b, uint32_t n) { return fat32_read((fat32_file_t *)h, b, n); }
+static int  src_fat_seek(void *h, int32_t o, int w)    { return fat32_seek((fat32_file_t *)h, o, w); }
+static void src_fat_close(void *h)                     { fat32_close((fat32_file_t *)h); }
+static int  src_ram_read(void *h, void *b, uint32_t n) { return ram_fs_read((ram_fs_file_t *)h, b, n); }
+static int  src_ram_seek(void *h, int32_t o, int w)    { return ram_fs_seek((ram_fs_file_t *)h, o, w); }
+static void src_ram_close(void *h)                     { ram_fs_close((ram_fs_file_t *)h); }
+
+static int elf_src_open(const char *path, elf_src_t *out) {
+    if (path[0] == '/' && path[1] == 's' && path[2] == 'd' && path[3] == '/') {
+        fat32_file_t *f = fat32_open(path + 3);
+        if (!f) return -1;
+        out->handle = f; out->read = src_fat_read; out->seek = src_fat_seek; out->close = src_fat_close;
+        return 0;
     }
-
-    uint32_t offset = 0;
-    uint32_t file_remaining = filesz;
-
-    while (offset < memsz) {
-        uint8_t buf[256];
-        memset(buf, 0, sizeof(buf));
-
-        uint32_t chunk = memsz - offset;
-        if (chunk > sizeof(buf)) chunk = sizeof(buf);
-
-        uint32_t from_file = (file_remaining < chunk) ? file_remaining : chunk;
-        if (from_file > 0) {
-            int n = fat32_read(f, buf, from_file);
-            if (n != (int)from_file) return -1;
-            file_remaining -= from_file;
-        }
-
-        uint32_t words = (chunk + 3u) / 4u;
-        uint32_t *dst32 = (uint32_t *)(dst + offset);
-        const uint32_t *buf32 = (const uint32_t *)buf;
-        for (uint32_t w = 0; w < words; w++) dst32[w] = buf32[w];
-
-        offset += chunk;
-    }
-
+    ram_fs_file_t *f = ram_fs_open(path, RAM_FS_O_READ);
+    if (!f) return -1;
+    out->handle = f; out->read = src_ram_read; out->seek = src_ram_seek; out->close = src_ram_close;
     return 0;
 }
 
-void (*elf_load(const char *path))(void) {
-    fat32_file_t *f = fat32_open(path);
-    if (!f) {
-        uart_print("[elf] fichier introuvable sur la carte : "); uart_print(path); uart_print("\n");
-        return NULL;
-    }
-
-    uint8_t ehdr[EHDR_SIZE];
-    if (fat32_read(f, ehdr, EHDR_SIZE) != EHDR_SIZE) {
-        uart_print("[elf] en-tete illisible (fichier trop court)\n");
-        fat32_close(f);
-        return NULL;
-    }
-
-    if (ehdr[0] != 0x7Fu || ehdr[1] != 'E' || ehdr[2] != 'L' || ehdr[3] != 'F') {
-        uart_print("[elf] pas un fichier ELF\n");
-        fat32_close(f);
-        return NULL;
-    }
-    if (ehdr[EI_CLASS] != ELFCLASS32 || ehdr[EI_DATA] != ELFDATA2LSB) {
-        uart_print("[elf] doit etre ELF32 little-endian\n");
-        fat32_close(f);
-        return NULL;
-    }
-    if (rd16(&ehdr[18]) != EM_XTENSA) {
-        uart_print("[elf] architecture incorrecte (attendu Xtensa)\n");
-        fat32_close(f);
-        return NULL;
-    }
-
-    uint32_t e_entry     = rd32(&ehdr[24]);
-    uint32_t e_phoff     = rd32(&ehdr[28]);
-    uint16_t e_phentsize = rd16(&ehdr[42]);
-    uint16_t e_phnum     = rd16(&ehdr[44]);
-
-    if (e_phentsize != PHDR_SIZE || e_phnum == 0) {
-        uart_print("[elf] table des program headers invalide\n");
-        fat32_close(f);
-        return NULL;
-    }
-
-    uint32_t iram_base = (uint32_t)&_user_iram_base, iram_size = (uint32_t)&_user_iram_size;
-    uint32_t dram_base = (uint32_t)&_user_dram_base, dram_size = (uint32_t)&_user_dram_size;
-
-    int segments_loaded = 0;
-
-    for (uint16_t i = 0; i < e_phnum; i++) {
-        if (fat32_seek(f, (int32_t)(e_phoff + (uint32_t)i * e_phentsize), FAT32_SEEK_SET) < 0) {
-            uart_print("[elf] seek program header echoue\n");
-            fat32_close(f);
-            return NULL;
-        }
-
-        uint8_t phdr[PHDR_SIZE];
-        if (fat32_read(f, phdr, PHDR_SIZE) != PHDR_SIZE) {
-            uart_print("[elf] program header illisible\n");
-            fat32_close(f);
-            return NULL;
-        }
-
-        if (rd32(&phdr[0]) != PT_LOAD) continue;
-
-        uint32_t p_offset = rd32(&phdr[4]);
-        uint32_t p_vaddr  = rd32(&phdr[8]);
-        uint32_t p_filesz = rd32(&phdr[16]);
-        uint32_t p_memsz  = rd32(&phdr[20]);
-
-        int in_iram = (p_vaddr >= iram_base) && (p_vaddr + p_memsz <= iram_base + iram_size);
-        int in_dram = (p_vaddr >= dram_base) && (p_vaddr + p_memsz <= dram_base + dram_size);
-        if (!in_iram && !in_dram) {
-            uart_print("[elf] REFUS : segment hors zone reservee, vaddr=");
-            uart_print_hex(p_vaddr);
-            uart_print(" memsz="); uart_print_hex(p_memsz);
-            uart_print(" (compile avec user_program.ld ?)\n");
-            fat32_close(f);
-            return NULL;
-        }
-        if (p_filesz > p_memsz) {
-            uart_print("[elf] REFUS : p_filesz > p_memsz (ELF incoherent)\n");
-            fat32_close(f);
-            return NULL;
-        }
-
-        if (fat32_seek(f, (int32_t)p_offset, FAT32_SEEK_SET) < 0) {
-            uart_print("[elf] seek donnees segment echoue\n");
-            fat32_close(f);
-            return NULL;
-        }
-
-        if (load_segment(f, (uint8_t *)p_vaddr, p_filesz, p_memsz) != 0) {
-            uart_print("[elf] chargement du segment echoue\n");
-            fat32_close(f);
-            return NULL;
-        }
-
-        segments_loaded++;
-    }
-
-    fat32_close(f);
-
-    if (segments_loaded == 0) {
-        uart_print("[elf] aucun segment PT_LOAD\n");
-        return NULL;
-    }
-
-    int entry_ok = (e_entry >= iram_base && e_entry < iram_base + iram_size) ||
-    (e_entry >= dram_base && e_entry < dram_base + dram_size);
-    if (!entry_ok) {
-        uart_print("[elf] REFUS : point d'entree hors zone reservee, e_entry=");
-        uart_print_hex(e_entry); uart_print("\n");
-        return NULL;
-    }
-
-    __asm__ volatile ("memw\n\tisync" ::: "memory");
-
-    uart_print("[elf] charge, entree="); uart_print_hex(e_entry); uart_print("\n");
-    return (void (*)(void))e_entry;
+static int src_read_at(elf_src_t *s, uint32_t off, void *buf, uint32_t len) {
+    if (s->seek(s->handle, (int32_t)off, 0) < 0) return -1;
+    return (s->read(s->handle, buf, len) == (int)len) ? 0 : -1;
 }
 
-int elf_exec(const char *path) {
-    void (*entry)(void) = elf_load(path);
-    if (!entry) return -1;
+static mem_pool_t code_pool;
+static int code_pool_ready = 0;
+static spinlock_t loader_lock = SPINLOCK_INIT;
 
-    int tid = task_create(entry);
-    if (tid < 0) {
-        uart_print("[elf] task_create a echoue (table de taches pleine ?)\n");
+static void code_pool_ensure(void) {
+    spinlock_acquire(&loader_lock);
+    if (!code_pool_ready) {
+        uint32_t base = (uint32_t)&_user_iram_base;
+        uint32_t size = (uint32_t)&_user_iram_size;
+        pool_init(&code_pool, "zone de code (IRAM)", (void *)base, (void *)(base + size));
+        code_pool_ready = 1;
+    }
+    spinlock_release(&loader_lock);
+}
+
+void elf_loader_print_layout(void) {
+    code_pool_ensure();
+    pool_print(&code_pool);
+    pool_print(&kernel_heap);
+}
+
+#define MAX_SECTIONS 48
+
+typedef struct {
+    uint32_t type, flags, addr, offset, size, align, info;
+    uint32_t delta;
+    uint8_t  loaded;
+} sec_t;
+
+static void write32(uint32_t addr, uint32_t value) { *(volatile uint32_t *)addr = value; }
+static uint32_t read32(uint32_t addr) { return *(volatile uint32_t *)addr; }
+
+static int load_section(elf_src_t *src, const sec_t *s, uint32_t dst) {
+    if (s->type == SHT_NOBITS) {                       /* .bss : mise à zéro */
+        for (uint32_t o = 0; o < s->size; o += 4) write32(dst + o, 0);
+        return 0;
+    }
+    if (src->seek(src->handle, (int32_t)s->offset, 0) < 0) return -1;
+
+    uint32_t done = 0;
+    while (done < s->size) {
+        uint8_t buf[256];
+        uint32_t chunk = s->size - done;
+        if (chunk > sizeof(buf)) chunk = sizeof(buf);
+        memset(buf, 0, sizeof(buf));
+        if (src->read(src->handle, buf, chunk) != (int)chunk) return -1;
+
+        uint32_t words = (chunk + 3u) / 4u;
+        const uint32_t *b32 = (const uint32_t *)buf;
+        for (uint32_t w = 0; w < words; w++) write32(dst + done + w * 4u, b32[w]);
+        done += chunk;
+    }
+    return 0;
+}
+
+static const sec_t *section_of_addr(const sec_t *secs, uint32_t n, uint32_t addr) {
+    for (uint32_t i = 0; i < n; i++) {
+        if (!secs[i].loaded) continue;
+        if (addr >= secs[i].addr && addr < secs[i].addr + secs[i].size) return &secs[i];
+    }
+    return NULL;
+}
+
+int elf_load_image(const char *path, elf_image_t *out) {
+    elf_src_t src;
+    if (out == NULL || elf_src_open(path, &src) != 0) {
+        uart_print("[elf] fichier introuvable : "); uart_print(path); uart_print("\n");
         return -1;
     }
 
-    uart_print("[elf] lance comme tache id="); uart_print_hex((uint32_t)tid); uart_print("\n");
-    return tid;
+    int ret = -1;
+    sec_t *secs = NULL;
+    void *iram_block = NULL;
+    void *dram_block = NULL;
+
+    uint8_t ehdr[EHDR_SIZE];
+    if (src_read_at(&src, 0, ehdr, EHDR_SIZE) != 0) { uart_print("[elf] en-tete illisible\n"); goto done; }
+
+    if (ehdr[0] != 0x7Fu || ehdr[1] != 'E' || ehdr[2] != 'L' || ehdr[3] != 'F' ||
+        ehdr[EI_CLASS] != ELFCLASS32 || ehdr[EI_DATA] != ELFDATA2LSB ||
+        rd16(&ehdr[18]) != EM_XTENSA) {
+        uart_print("[elf] pas un ELF32 Xtensa little-endian\n");
+    goto done;
+        }
+
+        uint32_t e_entry     = rd32(&ehdr[24]);
+        uint32_t e_shoff     = rd32(&ehdr[32]);
+        uint16_t e_shentsize = rd16(&ehdr[46]);
+        uint16_t e_shnum     = rd16(&ehdr[48]);
+
+        if (e_shoff == 0 || e_shentsize != SHDR_SIZE || e_shnum == 0 || e_shnum > MAX_SECTIONS) {
+            uart_print("[elf] table des sections absente ou trop grande -- compile avec -Wl,-q\n");
+            goto done;
+        }
+
+        secs = (sec_t *)nmap(e_shnum * sizeof(sec_t));
+        if (secs == NULL) { uart_print("[elf] memoire insuffisante\n"); goto done; }
+
+        uint32_t text_min = 0xFFFFFFFFu, text_max = 0, text_align = 4;
+        uint32_t data_min = 0xFFFFFFFFu, data_max = 0, data_align = 4;
+        int has_reloc = 0;
+
+        for (uint16_t i = 0; i < e_shnum; i++) {
+            uint8_t sh[SHDR_SIZE];
+            if (src_read_at(&src, e_shoff + (uint32_t)i * SHDR_SIZE, sh, SHDR_SIZE) != 0) goto done;
+
+            secs[i].type   = rd32(&sh[4]);
+            secs[i].flags  = rd32(&sh[8]);
+            secs[i].addr   = rd32(&sh[12]);
+            secs[i].offset = rd32(&sh[16]);
+            secs[i].size   = rd32(&sh[20]);
+            secs[i].info   = rd32(&sh[28]);
+            secs[i].align  = rd32(&sh[32]);
+            secs[i].delta  = 0;
+            secs[i].loaded = 0;
+
+            if (secs[i].type == SHT_RELA) has_reloc = 1;
+            if (!(secs[i].flags & SHF_ALLOC) || secs[i].size == 0) continue;
+
+            secs[i].loaded = 1;
+            uint32_t a = secs[i].addr, e = a + secs[i].size;
+            if (secs[i].flags & SHF_EXECINSTR) {
+                if (a < text_min) text_min = a;
+                if (e > text_max) text_max = e;
+                if (secs[i].align > text_align) text_align = secs[i].align;
+            } else {
+                if (a < data_min) data_min = a;
+                if (e > data_max) data_max = e;
+                if (secs[i].align > data_align) data_align = secs[i].align;
+            }
+        }
+
+        if (!has_reloc) {
+            uart_print("[elf] aucune relocation : recompile avec -Wl,-q, sinon le programme\n");
+            uart_print("[elf] ne peut etre charge qu'a son adresse de liaison\n");
+            goto done;
+        }
+        if (text_max <= text_min) { uart_print("[elf] aucune section de code\n"); goto done; }
+
+        uint32_t text_size = text_max - text_min;
+        code_pool_ensure();
+        iram_block = pool_alloc(&code_pool, text_size + text_align);
+        if (iram_block == NULL) {
+            uart_print("[elf] plus de place dans la zone de code\n");
+            goto done;
+        }
+        uint32_t iram_base = ((uint32_t)iram_block + text_align - 1) & ~(text_align - 1);
+
+        uint32_t data_size = (data_max > data_min) ? (data_max - data_min) : 0;
+        uint32_t data_base = 0;
+        if (data_size > 0) {
+            dram_block = nmap(data_size + data_align);
+            if (dram_block == NULL) { uart_print("[elf] memoire insuffisante (donnees)\n"); goto done; }
+            data_base = ((uint32_t)dram_block + data_align - 1) & ~(data_align - 1);
+        }
+
+        uint32_t text_delta = iram_base - text_min;
+        uint32_t data_delta = (data_size > 0) ? (data_base - data_min) : 0;
+
+        for (uint16_t i = 0; i < e_shnum; i++) {
+            if (!secs[i].loaded) continue;
+            secs[i].delta = (secs[i].flags & SHF_EXECINSTR) ? text_delta : data_delta;
+            if (load_section(&src, &secs[i], secs[i].addr + secs[i].delta) != 0) {
+                uart_print("[elf] lecture d'une section echouee\n");
+                goto done;
+            }
+        }
+
+        uint32_t patched = 0;
+        for (uint16_t i = 0; i < e_shnum; i++) {
+            if (secs[i].type != SHT_RELA) continue;
+            if (secs[i].info >= e_shnum || !secs[secs[i].info].loaded) continue;
+
+                const sec_t *target = &secs[secs[i].info];
+            for (uint32_t off = 0; off + RELA_SIZE <= secs[i].size; off += RELA_SIZE) {
+                uint8_t ent[RELA_SIZE];
+                if (src_read_at(&src, secs[i].offset + off, ent, RELA_SIZE) != 0) goto done;
+
+                uint32_t r_offset = rd32(&ent[0]);
+                uint32_t r_type   = rd32(&ent[4]) & 0xFFu;
+
+                if (r_type == R_XTENSA_SLOT0_OP) continue;
+                    if (r_type != R_XTENSA_32) continue;
+
+                        uint32_t loc = r_offset + target->delta;
+                if ((loc & 3u) != 0) {
+                    uart_print("[elf] relocation non alignee -- abandon\n");
+                    goto done;
+                }
+
+                uint32_t old = read32(loc);
+                const sec_t *pointee = section_of_addr(secs, e_shnum, old);
+                if (pointee == NULL) continue;
+                    write32(loc, old + pointee->delta);
+                patched++;
+            }
+        }
+
+        const sec_t *entry_sec = section_of_addr(secs, e_shnum, e_entry);
+        if (entry_sec == NULL) { uart_print("[elf] point d'entree hors des sections chargees\n"); goto done; }
+
+        __asm__ volatile ("memw\n\tisync" ::: "memory");
+
+        out->entry      = (void (*)(void))(e_entry + entry_sec->delta);
+        out->iram_block = iram_block;
+        out->dram_block = dram_block;
+
+        uart_print("[elf] "); uart_print(path);
+        uart_print(" : code en "); uart_print_hex(iram_base);
+        uart_print(", donnees en "); uart_print_hex(data_base);
+        uart_print(", "); uart_print_hex(patched); uart_print(" adresses corrigees\n");
+
+        iram_block = NULL; dram_block = NULL;
+        ret = 0;
+
+        done:
+        if (iram_block != NULL) pool_free(&code_pool, iram_block);
+        if (dram_block != NULL) unmap(dram_block);
+        if (secs != NULL) unmap(secs);
+        src.close(src.handle);
+    return ret;
+}
+
+void elf_unload(elf_image_t *img) {
+    if (img == NULL) return;
+
+    if (img->iram_block != NULL) unmap(img->iram_block);
+    if (img->dram_block != NULL) unmap(img->dram_block);
+    img->entry = NULL;
+    img->iram_block = NULL;
+    img->dram_block = NULL;
 }

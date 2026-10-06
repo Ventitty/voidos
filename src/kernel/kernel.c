@@ -19,7 +19,9 @@ void uart_putchar(char c) {
     uart0_hw_putchar(c);
 }
 
-void uart_print(const char *str) {
+static spinlock_t uart_lock = SPINLOCK_INIT;
+
+static void uart_write_str(const char *str) {
     while (*str != '\0') {
         if (*str == '\n') {
             uart_putchar('\r');
@@ -29,12 +31,28 @@ void uart_print(const char *str) {
     }
 }
 
+void uart_print(const char *str) {
+    if (uart_in_panic) {
+        uart_write_str(str);
+        return;
+    }
+    spinlock_acquire(&uart_lock);
+    uart_write_str(str);
+    spinlock_release(&uart_lock);
+}
+
 void uart_print_hex(uint32_t val) {
     const char hex_chars[] = "0123456789ABCDEF";
-    uart_print("0x");
-    for (int i = 28; i >= 0; i -= 4) {
-        uart_putchar(hex_chars[(val >> i) & 0xF]);
+    char buf[11];
+
+    buf[0] = '0';
+    buf[1] = 'x';
+    for (int i = 0; i < 8; i++) {
+        buf[2 + i] = hex_chars[(val >> (28 - 4 * i)) & 0xF];
     }
+    buf[10] = '\0';
+
+    uart_print(buf);
 }
 
 void echo(void) {
@@ -76,32 +94,76 @@ void echo(void) {
 #define SD_MISO 19
 #define SD_CS   5
 
-#define ELF_PROGRAM_PATH "/bin/PROG.ELF"
+static const char *programmes[] = {
+    "/sd/BIN/PROG1.ELF",
+    "/sd/BIN/PROG2.ELF",
+    "/sd/BIN/PROG3.ELF",
+};
+#define NB_PROGRAMMES (sizeof(programmes) / sizeof(programmes[0]))
 
-static void elf_exec_task(void) {
-    uart_print("[elf-run] init carte SD...\n");
-    if (sd_init(SD_SCLK, SD_MOSI, SD_MISO, SD_CS) != 0) {
-        uart_print("[elf-run] ECHEC : init carte SD\n");
-        while (1) { __asm__ volatile ("waiti 0"); }
-    }
+static elf_image_t images[NB_PROGRAMMES];
 
-    uart_print("[elf-run] montage FAT32...\n");
-    if (fat32_mount() != 0) {
-        uart_print("[elf-run] ECHEC : montage FAT32 (carte formatee en FAT32 ?)\n");
-        while (1) { __asm__ volatile ("waiti 0"); }
-    }
+static void ok(int cond, const char *libelle) {
+    uart_print(cond ? "  [OK]    " : "  [ECHEC] ");
+    uart_print(libelle);
+    uart_print("\n");
+}
+
+static void test_memoire(void) {
+    uart_print("\n--- memoire ---\n");
+
+    void *a = nmap(512);
+    void *b = nmap(512);
+    ok(a != NULL && b != NULL, "deux allocations sur le tas");
+    ok(((uint32_t)a >> 24) == 0x3F, "le tas est bien en DRAM");
+
+    unmap(a);
+    void *c = nmap(512);
+    ok(c == a, "bloc libere puis repris");
+    unmap(b);
+    unmap(c);
 
     elf_loader_print_layout();
+}
 
-    uart_print("[elf-run] contenu de la racine de la carte :\n");
-    fat32_ls("/");
+static void lancer_programmes(void) {
+    uart_print("\n--- programmes ---\n");
 
-    uart_print("[elf-run] execution de "); uart_print(ELF_PROGRAM_PATH); uart_print("...\n");
-    if (elf_exec(ELF_PROGRAM_PATH) < 0) {
-        uart_print("[elf-run] ECHEC : voir les messages [elf] ci-dessus\n");
+    uint32_t lances = 0;
+    for (uint32_t i = 0; i < NB_PROGRAMMES; i++) {
+        if (elf_load_image(programmes[i], &images[i]) != 0) continue;
+            if (task_create(images[i].entry) < 0) {
+                uart_print("[init] plus de tache disponible\n");
+                elf_unload(&images[i]);
+                continue;
+            }
+            lances++;
     }
 
-    while (1) { __asm__ volatile ("waiti 0"); }
+    uart_print("[init] programmes lances = "); uart_print_hex(lances); uart_print("\n");
+    elf_loader_print_layout();
+}
+
+static void tache_init(void) {
+    uart_print("\n=== voidOS demarre ===\n");
+
+    test_memoire();
+
+    uart_print("\n--- carte SD ---\n");
+    if (sd_init(SD_SCLK, SD_MOSI, SD_MISO, SD_CS) != 0) {
+        uart_print("[init] pas de carte SD : le noyau tourne sans\n");
+    } else if (fat32_mount() != 0) {
+        uart_print("[init] carte illisible (formatee en FAT32 ?)\n");
+    } else {
+        uart_print("[init] racine de la carte :\n");
+        fat32_ls("/");
+        lancer_programmes();
+    }
+
+    for (uint32_t n = 1; ; n++) {
+        for (volatile uint32_t d = 0; d < 8000000; d++) { }
+        uart_print("[init] battement "); uart_print_hex(n); uart_print("\n");
+    }
 }
 
 void kernel_main(void) {
@@ -118,7 +180,7 @@ void kernel_main(void) {
     uart_fs_bootstrap();
 
     task_create(echo);
-    task_create(elf_exec_task);
+    task_create(tache_init);
 
     scheduler_start();
 }
