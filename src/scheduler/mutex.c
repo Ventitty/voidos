@@ -3,9 +3,7 @@
 void mutex_init(mutex_t *m) {
     spinlock_acquire(&m->lock);
     m->owner_task_id = -1;
-    m->waitq_head = 0;
-    m->waitq_tail = 0;
-    m->waitq_count = 0;
+    wait_queue_init(&m->waiters);
     spinlock_release(&m->lock);
 }
 
@@ -32,17 +30,13 @@ void mutex_lock(mutex_t *m) {
             return;
         }
 
-        int me = scheduler_current_task_id();
-        if (me < 0) {
+        task_t *me = scheduler_current_task();
+        if (me == NULL) {
             spinlock_release(&m->lock);
             continue;
         }
 
-        if (m->waitq_count < MAX_TASKS) {
-            m->waitq[m->waitq_tail] = me;
-            m->waitq_tail = (m->waitq_tail + 1) % MAX_TASKS;
-            m->waitq_count++;
-        }
+        wait_queue_push(&m->waiters, me);
         /* Se marquer bloqué PENDANT qu'on tient encore le verrou : c'est le
          * seul moyen de ne pas perdre un réveil. En relâchant d'abord, un
          * mutex_unlock() concurrent pouvait nous retirer de la file et appeler
@@ -62,16 +56,9 @@ void mutex_unlock(mutex_t *m) {
 
     m->owner_task_id = -1;
 
-    int wake = -1;
-    if (m->waitq_count > 0) {
-        wake = m->waitq[m->waitq_head];
-        m->waitq_head = (m->waitq_head + 1) % MAX_TASKS;
-        m->waitq_count--;
-    }
+    task_t *wake = wait_queue_pop(&m->waiters);
 
     spinlock_release(&m->lock);
 
-    if (wake >= 0) {
-        scheduler_unblock(wake);
-    }
+    scheduler_unblock(wake);   /* sans effet si NULL */
 }

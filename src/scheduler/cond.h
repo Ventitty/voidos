@@ -8,13 +8,10 @@
 
 typedef struct {
     spinlock_t lock;
-    int waitq[MAX_TASKS];
-    int waitq_head;
-    int waitq_tail;
-    int waitq_count;
+    wait_queue_t waiters;
 } cond_t;
 
-#define COND_INIT { SPINLOCK_INIT, {0}, 0, 0, 0 }
+#define COND_INIT { SPINLOCK_INIT, WAIT_QUEUE_INIT }
 
 void cond_init(cond_t *c);
 void cond_wait(cond_t *c, mutex_t *m);

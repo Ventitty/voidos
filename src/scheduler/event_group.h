@@ -4,19 +4,15 @@
 #include "src/types.h"
 #include "src/scheduler/spinlock.h"
 #include "src/scheduler/scheduler.h"
-#include "arch/xtensa_lx6/includes/xtensa.h"
 
 typedef struct {
     spinlock_t lock;
     volatile uint32_t bits;
-
-    struct {
-        uint8_t  active;
-        uint32_t mask;
-        uint8_t  wait_all;
-        uint8_t  clear_on_exit;
-    } waiting[MAX_TASKS];
+    /* Tâches en attente ; chacune porte son masque dans wait_mask/wait_all. */
+    wait_queue_t waiters;
 } event_group_t;
+
+#define EVENT_GROUP_INIT { SPINLOCK_INIT, 0, WAIT_QUEUE_INIT }
 
 void event_group_init(event_group_t *eg);
 uint32_t event_group_set_bits(event_group_t *eg, uint32_t bits_to_set);

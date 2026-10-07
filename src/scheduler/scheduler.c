@@ -1,109 +1,171 @@
 #include "src/scheduler/scheduler.h"
+#include "src/utils/utils.h"
+#include "arch/xtensa_lx6/includes/cpu.h"
 
-static task_t tasks[MAX_TASKS];
+/* ---------------------------------------------------------------------------
+ * Ordonnanceur préemptif round-robin, SMP 2 cœurs, tâches allouées sur le tas.
+ *
+ * tasks_lock protège : task_list, cursor, task_count, next_id, l'état
+ * (state / running_on / sp) de chaque tâche et current_task[].
+ *
+ * Cycle de vie d'une tâche :
+ *   task_alloc (nmap) -> READY <-> RUNNING <-> BLOCKED -> ZOMBIE -> task_free
+ *
+ * Libération différée : quand une tâche se termine, on est encore en train
+ * d'exécuter du code SUR SA PILE (task_exit, ou l'interruption qui gère son
+ * SYS_EXIT). On ne peut donc pas la libérer tout de suite. Elle est retirée
+ * de la liste (ZOMBIE), puis le cœur la quitte en basculant vers une autre
+ * tâche et la note dans retired[core]. Au changement de contexte SUIVANT
+ * sur ce même cœur, on s'exécute forcément sur la pile d'une autre tâche :
+ * la zombie est libérée à ce moment-là. Seul le cœur qui l'a retirée la
+ * libère, l'autre cœur n'y touche jamais.
+ *
+ * Tâches idle : une par cœur, hors de la liste, élue quand rien d'autre
+ * n'est prêt. Grâce à elles le cœur quitte TOUJOURS la tâche sortante, ce
+ * qui garantit la libération différée ci-dessus et évite qu'un cœur reste
+ * sur la pile d'une tâche bloquée pendant que l'autre la reprend.
+ * ------------------------------------------------------------------------- */
+
 static spinlock_t tasks_lock = SPINLOCK_INIT;
 
-static volatile int current_task_idx[2] = { -1, -1 };
+static task_t  *task_list  = NULL;   /* tâches ordonnançables (hors idle)    */
+static task_t  *cursor     = NULL;   /* dernière élue (tourniquet)           */
+static uint32_t task_count = 0;
+static int      next_id    = 0;
 
-static int global_cursor = -1;
+static task_t *volatile current_task[2] = { NULL, NULL };
+static task_t *idle_task[2] = { NULL, NULL };
+static task_t *retired[2]   = { NULL, NULL };   /* zombie à libérer au prochain passage */
 
-static void stack_overflow_halt(int task_id, uint32_t sp) {
+/* ---- Détection de débordement de pile ----------------------------------- */
+
+static void stack_overflow_halt(const task_t *t, uint32_t sp) {
     uart_print("\n[noyau] DEBORDEMENT DE PILE : tache ");
-    uart_print_hex((uint32_t)task_id);
+    uart_print_hex((uint32_t)t->id);
     uart_print(", sp=");
     uart_print_hex(sp);
     uart_print(", pile=");
-    uart_print_hex((uint32_t)tasks[task_id].stack);
-    uart_print(" (TASK_STACK_SIZE trop petit, ou recursion)\n");
+    uart_print_hex((uint32_t)t->stack);
+    uart_print(" (pile trop petite, ou recursion)\n");
     uart_print("[noyau] coeur arrete : la memoire voisine a pu etre corrompue.\n");
 
     (void)cpu_irq_mask_all();
     while (1) { }
 }
 
-static void stack_check_outgoing(int cur, uint32_t *current_sp) {
-    if (cur < 0 || tasks[cur].state == TASK_UNUSED) return;
+static void stack_check_outgoing(const task_t *t, uint32_t *current_sp) {
+    if (t == NULL) return;
 
-    uint32_t base = (uint32_t)tasks[cur].stack;
+    uint32_t base = (uint32_t)t->stack;
     if ((uint32_t)current_sp < base + STACK_GUARD_BYTES) {
-        stack_overflow_halt(cur, (uint32_t)current_sp);
+        stack_overflow_halt(t, (uint32_t)current_sp);
     }
 
     const volatile uint32_t *guard = (const volatile uint32_t *)base;
     for (uint32_t i = 0; i < STACK_GUARD_BYTES / 4u; i++) {
         if (guard[i] != STACK_FILL) {
-            stack_overflow_halt(cur, (uint32_t)current_sp);
+            stack_overflow_halt(t, (uint32_t)current_sp);
         }
     }
 }
 
-uint32_t scheduler_stack_unused(int task_id) {
-    if (task_id < 0 || task_id >= MAX_TASKS) return 0;
-    if (tasks[task_id].state == TASK_UNUSED || tasks[task_id].stack == NULL) return 0;
+/* ---- Liste des tâches (sous tasks_lock) --------------------------------- */
 
-    const volatile uint32_t *p = (const volatile uint32_t *)tasks[task_id].stack;
-    uint32_t words = TASK_STACK_SIZE / 4u, n = 0;
-    while (n < words && p[n] == STACK_FILL) n++;
-    return n * 4u;
+static void list_append_locked(task_t *t) {
+    t->next = NULL;
+    if (task_list == NULL) {
+        task_list = t;
+    } else {
+        task_t *it = task_list;
+        while (it->next) it = it->next;
+        it->next = t;
+    }
+    task_count++;
 }
 
-uint32_t get_core_id(void) {
-    return cpu_core_id();
+static void list_remove_locked(task_t *t) {
+    task_t *prev = NULL;
+    for (task_t *it = task_list; it; prev = it, it = it->next) {
+        if (it != t) continue;
+
+        if (prev) prev->next = t->next;
+        else      task_list = t->next;
+
+        /* Le tourniquet repart du prédécesseur (ou de la tête si NULL). */
+        if (cursor == t) cursor = prev;
+
+        t->next = NULL;
+        task_count--;
+        return;
+    }
 }
+
+static task_t *find_locked(int id) {
+    for (task_t *it = task_list; it; it = it->next) {
+        if (it->id == id) return it;
+    }
+    return NULL;
+}
+
+static void mark_zombie_locked(task_t *t) {
+    t->state = TASK_ZOMBIE;
+    list_remove_locked(t);
+}
+
+/* Une tâche est élue si elle est prête, autorisée sur ce cœur, et n'est
+ * PAS en train de s'exécuter ailleurs : une tâche débloquée par l'autre
+ * cœur avant d'avoir été préemptée est READY mais tourne encore. */
+static int eligible(const task_t *t, uint32_t core) {
+    return t->state == TASK_READY
+    && t->running_on == TASK_ANY_CORE
+    && (t->pinned_core == TASK_ANY_CORE || t->pinned_core == core);
+}
+
+static task_t *pick_next_locked(uint32_t core) {
+    if (task_list == NULL) return NULL;
+
+    task_t *start = (cursor && cursor->next) ? cursor->next : task_list;
+    task_t *t = start;
+    do {
+        if (eligible(t, core)) {
+            cursor = t;
+            return t;
+        }
+        t = t->next ? t->next : task_list;
+    } while (t != start);
+
+    return NULL;
+}
+
+/* ---- Allocation / libération ------------------------------------------- */
 
 static void task_exit(void) {
-    uint32_t core = get_core_id();
-
-    spinlock_acquire(&tasks_lock);
-    int cur = current_task_idx[core];
-    if (cur >= 0) {
-        tasks[cur].state = TASK_UNUSED;
-    }
+    spinlock_acquire(&tasks_lock);           /* masque l'IRQ du tick : pas de migration */
+    task_t *me = current_task[cpu_core_id()];
+    if (me != NULL) mark_zombie_locked(me);
     spinlock_release(&tasks_lock);
 
-    while (1) {
-        cpu_wait_irq();
-    }
+    /* Le prochain tick bascule ailleurs et note la zombie comme retirée. */
+    while (1) cpu_wait_irq();
 }
 
-void scheduler_init(void) {
-    spinlock_acquire(&tasks_lock);
-    for (int i = 0; i < MAX_TASKS; i++) {
-        tasks[i].state = TASK_UNUSED;
-        tasks[i].sp = 0;
-        tasks[i].stack = 0;
-        tasks[i].pinned_core = TASK_ANY_CORE;
-        tasks[i].running_on = TASK_ANY_CORE;
-    }
-    global_cursor = -1;
-    spinlock_release(&tasks_lock);
-
-    current_task_idx[0] = -1;
-    current_task_idx[1] = -1;
+static void idle_loop(void) {
+    while (1) cpu_wait_irq();
 }
 
-static int task_create_common(void (*entry)(void), uint8_t pinned_core, int user_mode) {
-    spinlock_acquire(&tasks_lock);
+static task_t *task_alloc(void (*entry)(void), uint8_t pinned_core, int user_mode, uint32_t stack_size) {
+    task_t *t = (task_t *)nmap(sizeof(task_t));
+    if (t == NULL) return NULL;
 
-    int slot = -1;
-    for (int i = 0; i < MAX_TASKS; i++) {
-        if (tasks[i].state == TASK_UNUSED) { slot = i; break; }
-    }
-    if (slot < 0) {
-        spinlock_release(&tasks_lock);
-        return -1;
-    }
-
-    tasks[slot].state = TASK_BLOCKED;
-    spinlock_release(&tasks_lock);
-
-    void *stack = nmap(TASK_STACK_SIZE);
+    void *stack = nmap(stack_size);
     if (stack == NULL) {
-        tasks[slot].state = TASK_UNUSED;
-        return -1;
+        unmap(t);
+        return NULL;
     }
 
-    uint8_t *stack_top = (uint8_t *)(((uint32_t)stack + TASK_STACK_SIZE) & ~0xFu);
+    memset(t, 0, sizeof(task_t));
+
+    uint8_t *stack_top = (uint8_t *)(((uint32_t)stack + stack_size) & ~0xFu);
     cpu_context_t *ctx = (cpu_context_t *)(stack_top - sizeof(cpu_context_t));
 
     for (uint32_t *p = (uint32_t *)stack; p < (uint32_t *)ctx; p++) *p = STACK_FILL;
@@ -115,19 +177,58 @@ static int task_create_common(void (*entry)(void), uint8_t pinned_core, int user
     ctx->exccause = EXCCAUSE_LEVEL1_INTERRUPT;
 
     uint32_t ps = cpu_read_ps();
-    if (user_mode) {
-        ps |= 0x00000020u;
-    }
+    if (user_mode) ps |= PS_UM_MASK;
     ctx->ps = ps;
 
-    tasks[slot].sp          = (uint32_t *)ctx;
-    tasks[slot].stack       = stack;
-    tasks[slot].pinned_core = pinned_core;
-    tasks[slot].running_on  = TASK_ANY_CORE;
-    tasks[slot].id          = (uint32_t)slot;
-    tasks[slot].state       = TASK_READY;
+    t->sp          = (uint32_t *)ctx;
+    t->stack       = stack;
+    t->stack_size  = stack_size;
+    t->state       = TASK_READY;
+    t->pinned_core = pinned_core;
+    t->running_on  = TASK_ANY_CORE;
+    t->id          = -1;
+    return t;
+}
 
-    return slot;
+static void task_free(task_t *t) {
+    unmap(t->stack);
+    unmap(t);
+}
+
+/* ---- Initialisation et création ---------------------------------------- */
+
+void scheduler_init(void) {
+    spinlock_acquire(&tasks_lock);
+    task_list  = NULL;
+    cursor     = NULL;
+    task_count = 0;
+    next_id    = 0;
+    current_task[0] = current_task[1] = NULL;
+    retired[0] = retired[1] = NULL;
+    spinlock_release(&tasks_lock);
+
+    for (uint8_t core = 0; core < 2; core++) {
+        idle_task[core] = task_alloc(idle_loop, core, 0, IDLE_STACK_SIZE);
+        if (idle_task[core] == NULL) {
+            uart_print("[noyau] impossible d'allouer la tache idle\n");
+            (void)cpu_irq_mask_all();
+            while (1) { }
+        }
+    }
+}
+
+static int task_create_common(void (*entry)(void), uint8_t pinned_core, int user_mode) {
+    task_t *t = task_alloc(entry, pinned_core, user_mode, TASK_STACK_SIZE);
+    if (t == NULL) return -1;
+
+    spinlock_acquire(&tasks_lock);
+    t->id = next_id;
+    next_id = (next_id + 1) & 0x7FFFFFFF;
+    int id = t->id;               /* lu sous verrou : t peut finir dès le release */
+    list_append_locked(t);
+    spinlock_release(&tasks_lock);
+
+    return id;
 }
 
 int task_create(void (*entry)(void)) {
@@ -148,104 +249,53 @@ int task_create_user_pinned(void (*entry)(void), uint8_t core) {
     return task_create_common(entry, core, 1);
 }
 
-static inline int task_eligible_for(const task_t *t, uint32_t core) {
-    return t->pinned_core == TASK_ANY_CORE || t->pinned_core == core;
-}
+/* ---- Changement de contexte (appelé depuis l'interruption) ------------- */
 
 uint32_t *schedule_next_task(uint32_t *current_sp) {
-    uint32_t core = get_core_id();
+    uint32_t core = cpu_core_id();
+    task_t *cur = current_task[core];
 
-    stack_check_outgoing(current_task_idx[core], current_sp);
+    stack_check_outgoing(cur, current_sp);
+
+    /* Zombie quittée au passage précédent : on est maintenant sur la pile
+     * d'une autre tâche, elle peut être libérée (après le verrou). */
+    task_t *to_free = retired[core];
+    retired[core] = NULL;
 
     spinlock_acquire(&tasks_lock);
 
-    int cur = current_task_idx[core];
-    if (cur >= 0) {
-        tasks[cur].sp = current_sp;
-        tasks[cur].running_on = TASK_ANY_CORE;
-        if (tasks[cur].state == TASK_RUNNING) {
-            tasks[cur].state = TASK_READY;
-        }
+    if (cur != NULL) {
+        cur->sp = current_sp;
+        cur->running_on = TASK_ANY_CORE;
+        if (cur->state == TASK_RUNNING) cur->state = TASK_READY;
     }
 
-    int start = global_cursor;
-    int next = -1;
-    for (int i = 1; i <= MAX_TASKS; i++) {
-        int idx = (start + i + MAX_TASKS) % MAX_TASKS;
-        if (tasks[idx].state == TASK_READY && task_eligible_for(&tasks[idx], core)) {
-            next = idx;
-            break;
-        }
+    task_t *next = pick_next_locked(core);
+    if (next == NULL) next = idle_task[core];
+
+    next->state = TASK_RUNNING;
+    next->running_on = (uint8_t)core;
+    current_task[core] = next;
+
+    if (cur != NULL && cur->state == TASK_ZOMBIE) {
+        retired[core] = cur;
     }
 
-    if (next < 0) {
-        if (cur >= 0 && tasks[cur].state == TASK_READY) {
-            tasks[cur].state = TASK_RUNNING;
-            tasks[cur].running_on = core;
-            spinlock_release(&tasks_lock);
-            return current_sp;
-        }
-        spinlock_release(&tasks_lock);
-        current_task_idx[core] = -1;
-        return current_sp;
-    }
-
-    tasks[next].state = TASK_RUNNING;
-    tasks[next].running_on = core;
-    current_task_idx[core] = next;
-    global_cursor = next;
-    uint32_t *new_sp = tasks[next].sp;
-
+    uint32_t *new_sp = next->sp;
     spinlock_release(&tasks_lock);
+
+    if (to_free != NULL) task_free(to_free);
 
     return new_sp;
 }
 
-int scheduler_current_task_id(void) {
-    return current_task_idx[get_core_id()];
-}
-
-int scheduler_mark_blocked_self(void) {
-    int me = scheduler_current_task_id();
-    if (me < 0) return -1;
-
-    spinlock_acquire(&tasks_lock);
-    tasks[me].state = TASK_BLOCKED;
-    spinlock_release(&tasks_lock);
-
-    return me;
-}
-
-void scheduler_yield_blocked(int me) {
-    if (me < 0) return;
-
-    while (tasks[me].state == TASK_BLOCKED) {
-        cpu_wait_irq();
-    }
-}
-
-void scheduler_block_current(void) {
-    int me = scheduler_mark_blocked_self();
-    scheduler_yield_blocked(me);
-}
-
-void scheduler_unblock(int task_id) {
-    if (task_id < 0 || task_id >= MAX_TASKS) return;
-
-    spinlock_acquire(&tasks_lock);
-    if (tasks[task_id].state == TASK_BLOCKED) {
-        tasks[task_id].state = TASK_READY;
-    }
-    spinlock_release(&tasks_lock);
-}
-
 uint32_t *scheduler_terminate_current(uint32_t *sp) {
-    uint32_t core = get_core_id();
+    uint32_t core = cpu_core_id();
 
     spinlock_acquire(&tasks_lock);
-    int cur = current_task_idx[core];
-    if (cur >= 0) {
-        tasks[cur].state = TASK_UNUSED;
+    task_t *cur = current_task[core];
+    if (cur != NULL && cur != idle_task[core]) {
+        mark_zombie_locked(cur);
     }
     spinlock_release(&tasks_lock);
 
@@ -253,17 +303,97 @@ uint32_t *scheduler_terminate_current(uint32_t *sp) {
 }
 
 void scheduler_start(void) {
-    uint32_t core = get_core_id();
+    uint32_t core = cpu_core_id();
 
     interrupts_init_this_core();
 
-    current_task_idx[core] = -1;
+    current_task[core] = NULL;
 
     interrupts_enable_line(TIMER0_IRQ_LINE);
     set_cpu_private_timer(0, TICK_CYCLES);
     interrupts_enable_global();
 
-    while (1) {
+    /* La pile de boot est abandonnée au premier tick. */
+    while (1) cpu_wait_irq();
+}
+
+/* ---- Tâche courante et blocage ----------------------------------------- */
+
+uint32_t get_core_id(void) {
+    return cpu_core_id();
+}
+
+task_t *scheduler_current_task(void) {
+    /* Masquage : sans lui, une préemption entre la lecture du numéro de
+     * cœur et celle de current_task[] pourrait nous faire migrer et lire
+     * la tâche de l'autre cœur. */
+    uint32_t ps = cpu_irq_mask_all();
+    uint32_t core = cpu_core_id();
+    task_t *t = current_task[core];
+    cpu_write_ps(ps);
+
+    if (t == idle_task[0] || t == idle_task[1]) return NULL;
+    return t;
+}
+
+int scheduler_current_task_id(void) {
+    task_t *t = scheduler_current_task();
+    return t ? t->id : -1;
+}
+
+task_t *scheduler_mark_blocked_self(void) {
+    task_t *me = scheduler_current_task();
+    if (me == NULL) return NULL;
+
+    spinlock_acquire(&tasks_lock);
+    me->state = TASK_BLOCKED;
+    spinlock_release(&tasks_lock);
+
+    return me;
+}
+
+void scheduler_yield_blocked(task_t *me) {
+    if (me == NULL) return;
+
+    while (me->state == TASK_BLOCKED) {
         cpu_wait_irq();
     }
+}
+
+void scheduler_block_current(void) {
+    scheduler_yield_blocked(scheduler_mark_blocked_self());
+}
+
+void scheduler_unblock(task_t *t) {
+    if (t == NULL) return;
+
+    spinlock_acquire(&tasks_lock);
+    if (t->state == TASK_BLOCKED) {
+        t->state = TASK_READY;
+    }
+    spinlock_release(&tasks_lock);
+}
+
+/* ---- Statistiques ------------------------------------------------------- */
+
+uint32_t scheduler_stack_unused(int task_id) {
+    uint32_t n = 0;
+
+    spinlock_acquire(&tasks_lock);
+    task_t *t = find_locked(task_id);
+    if (t != NULL) {
+        const volatile uint32_t *p = (const volatile uint32_t *)t->stack;
+        uint32_t words = t->stack_size / 4u;
+        while (n < words && p[n] == STACK_FILL) n++;
+    }
+    spinlock_release(&tasks_lock);
+
+    return n * 4u;
+}
+
+uint32_t scheduler_task_count(void) {
+    spinlock_acquire(&tasks_lock);
+    uint32_t n = task_count;
+    spinlock_release(&tasks_lock);
+    return n;
 }

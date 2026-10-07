@@ -1,5 +1,12 @@
 #include "src/file_system/vfs/vfs.h"
 
+static vfs_dev_t  *dev_list = NULL;
+static spinlock_t  dev_lock = SPINLOCK_INIT;
+
+/* ---- Routage ------------------------------------------------------------ */
+
+/* Vrai si path vaut exactement dir ou commence par "dir/". Évite que
+ * "/devices" ou "/tmpfile" soient pris pour /dev ou /tmp. */
 static int path_in(const char *path, const char *dir) {
     size_t n = strlen(dir);
     return strncmp(path, dir, n) == 0 && (path[n] == '\0' || path[n] == '/');
@@ -17,9 +24,46 @@ static int is_ram_path(const char *path) {
     return path_in(path, "/dev") || path_in(path, "/tmp");
 }
 
+/* /dev et /tmp eux-mêmes : points de montage, jamais supprimables. */
 static int is_mount_point(const char *path) {
     return strcmp(path, "/dev") == 0 || strcmp(path, "/tmp") == 0;
 }
+
+/* Longueur du premier composant après "/dev/" (0 si le chemin n'est pas
+ * sous /dev/). Pour "/dev/uart0/x", retourne 5 ("uart0"). */
+static uint32_t dev_component_len(const char *path) {
+    if (strncmp(path, "/dev/", 5) != 0) return 0;
+    uint32_t n = 0;
+    while (path[5 + n] != '\0' && path[5 + n] != '/') n++;
+    return n;
+}
+
+/* Périphérique nommé par le premier composant après /dev/, ou NULL.
+ * exact = 1 : le chemin doit être exactement /dev/<nom>. */
+static vfs_dev_t *dev_lookup(const char *path, int exact) {
+    uint32_t n = dev_component_len(path);
+    if (n == 0 || n >= VFS_DEV_NAME_MAX) return NULL;
+    if (exact && path[5 + n] != '\0') return NULL;
+
+    spinlock_acquire(&dev_lock);
+    vfs_dev_t *found = NULL;
+    for (vfs_dev_t *d = dev_list; d; d = d->next) {
+        if (strncmp(d->name, path + 5, n) == 0 && d->name[n] == '\0') {
+            found = d;
+            break;
+        }
+    }
+    spinlock_release(&dev_lock);
+    return found;
+}
+
+/* Vrai si path EST un périphérique ou se trouve "sous" l'un d'eux
+ * (/dev/uart0/x) : de tels chemins ne doivent jamais atteindre ramfs. */
+static int dev_shadows(const char *path) {
+    return dev_lookup(path, 0) != NULL;
+}
+
+/* ---- Initialisation ----------------------------------------------------- */
 
 int vfs_init(void) {
     ram_fs_init();
@@ -38,6 +82,8 @@ int vfs_sd_mounted(void) {
     return fat32_is_mounted();
 }
 
+/* ---- Fichiers ----------------------------------------------------------- */
+
 vfs_file_t *vfs_open(const char *path, int flags) {
     if (!is_valid(path) || is_root(path)) return NULL;
 
@@ -45,8 +91,15 @@ vfs_file_t *vfs_open(const char *path, int flags) {
     vfs_backend_t backend;
 
     if (is_ram_path(path)) {
-        handle = ram_fs_open(path, flags);
-        backend = VFS_BACKEND_RAM;
+        vfs_dev_t *dev = dev_lookup(path, 1);
+        if (dev != NULL) {
+            handle = dev;
+            backend = VFS_BACKEND_DEV;
+        } else {
+            if (dev_shadows(path)) return NULL;   /* /dev/uart0/x */
+                handle = ram_fs_open(path, flags);
+            backend = VFS_BACKEND_RAM;
+        }
     } else {
         /* FAT32 en lecture seule. */
         if (flags & (VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC | VFS_O_APPEND)) return NULL;
@@ -57,8 +110,8 @@ vfs_file_t *vfs_open(const char *path, int flags) {
 
     vfs_file_t *f = (vfs_file_t *)nmap(sizeof(vfs_file_t));
     if (f == NULL) {
-        if (backend == VFS_BACKEND_RAM) ram_fs_close((ram_fs_file_t *)handle);
-        else                            fat32_close((fat32_file_t *)handle);
+        if (backend == VFS_BACKEND_RAM)        ram_fs_close((ram_fs_file_t *)handle);
+        else if (backend == VFS_BACKEND_FAT32) fat32_close((fat32_file_t *)handle);
         return NULL;
     }
 
@@ -69,34 +122,44 @@ vfs_file_t *vfs_open(const char *path, int flags) {
 
 void vfs_close(vfs_file_t *file) {
     if (file == NULL) return;
-    if (file->backend == VFS_BACKEND_RAM) ram_fs_close((ram_fs_file_t *)file->handle);
-    else                                  fat32_close((fat32_file_t *)file->handle);
+    if (file->backend == VFS_BACKEND_RAM)        ram_fs_close((ram_fs_file_t *)file->handle);
+    else if (file->backend == VFS_BACKEND_FAT32) fat32_close((fat32_file_t *)file->handle);
     unmap(file);
 }
 
 int vfs_read(vfs_file_t *file, void *buf, uint32_t len) {
     if (file == NULL || buf == NULL) return -1;
+    if (file->backend == VFS_BACKEND_DEV) {
+        vfs_dev_t *d = (vfs_dev_t *)file->handle;
+        return d->read ? d->read(buf, len) : -1;
+    }
     if (file->backend == VFS_BACKEND_RAM) return ram_fs_read((ram_fs_file_t *)file->handle, buf, len);
     return fat32_read((fat32_file_t *)file->handle, buf, len);
 }
 
 int vfs_write(vfs_file_t *file, const void *buf, uint32_t len) {
     if (file == NULL || buf == NULL) return -1;
+    if (file->backend == VFS_BACKEND_DEV) {
+        vfs_dev_t *d = (vfs_dev_t *)file->handle;
+        return d->write ? d->write(buf, len) : -1;
+    }
     if (file->backend == VFS_BACKEND_RAM) return ram_fs_write((ram_fs_file_t *)file->handle, buf, len);
     return -1;
 }
 
 int vfs_seek(vfs_file_t *file, int32_t offset, int whence) {
-    if (file == NULL) return -1;
-    if (file->backend == VFS_BACKEND_RAM) return ram_fs_seek((ram_fs_file_t *)file->handle, offset, whence);
-    return fat32_seek((fat32_file_t *)file->handle, offset, whence);
+    if (file == NULL || file->backend == VFS_BACKEND_DEV) return -1;   /* flux : pas de position */
+        if (file->backend == VFS_BACKEND_RAM) return ram_fs_seek((ram_fs_file_t *)file->handle, offset, whence);
+        return fat32_seek((fat32_file_t *)file->handle, offset, whence);
 }
 
 uint32_t vfs_size(vfs_file_t *file) {
-    if (file == NULL) return 0;
+    if (file == NULL || file->backend == VFS_BACKEND_DEV) return 0;
     if (file->backend == VFS_BACKEND_RAM) return ram_fs_size((ram_fs_file_t *)file->handle);
     return fat32_size((fat32_file_t *)file->handle);
 }
+
+/* ---- Arborescence ------------------------------------------------------- */
 
 int vfs_stat(const char *path, uint32_t *out_size, int *out_is_dir) {
     if (!is_valid(path)) return -1;
@@ -108,6 +171,13 @@ int vfs_stat(const char *path, uint32_t *out_size, int *out_is_dir) {
     }
 
     if (!is_ram_path(path)) return fat32_stat(path, out_size, out_is_dir);
+
+    if (dev_lookup(path, 1) != NULL) {
+        if (out_size) *out_size = 0;
+        if (out_is_dir) *out_is_dir = 0;
+        return 0;
+    }
+    if (dev_shadows(path)) return -1;
 
     if (!ram_fs_exists(path)) return -1;
     int dir = ram_fs_is_dir(path);
@@ -131,22 +201,23 @@ int vfs_is_dir(const char *path) {
 }
 
 int vfs_mkdir(const char *path) {
-    if (!is_valid(path) || !is_ram_path(path)) return -1;
+    if (!is_valid(path) || !is_ram_path(path) || dev_shadows(path)) return -1;
     return ram_fs_mkdir(path);
 }
 
 int vfs_mkdir_p(const char *path) {
-    if (!is_valid(path) || !is_ram_path(path)) return -1;
+    if (!is_valid(path) || !is_ram_path(path) || dev_shadows(path)) return -1;
     return ram_fs_mkdir_p(path);
 }
 
 int vfs_rmdir(const char *path) {
-    if (!is_valid(path) || !is_ram_path(path) || is_mount_point(path)) return -1;
+    if (!is_valid(path) || !is_ram_path(path) || is_mount_point(path) || dev_shadows(path)) return -1;
     return ram_fs_rmdir(path);
 }
 
 int vfs_unlink(const char *path) {
-    if (!is_valid(path) || !is_ram_path(path) || is_mount_point(path)) return -1;
+    /* Les périphériques sont permanents (voir le registre plus haut). */
+    if (!is_valid(path) || !is_ram_path(path) || is_mount_point(path) || dev_shadows(path)) return -1;
     return ram_fs_unlink(path);
 }
 
@@ -154,6 +225,7 @@ int vfs_ls(const char *path) {
     if (!is_valid(path)) return -1;
 
     if (is_root(path)) {
+        /* Racine unifiée : les points de montage RAM, puis la carte. */
         uart_print("D  dev/\n");
         uart_print("D  tmp/\n");
         if (!fat32_is_mounted()) {
@@ -163,6 +235,64 @@ int vfs_ls(const char *path) {
         return fat32_ls("/");
     }
 
-    if (is_ram_path(path)) return ram_fs_ls(path);
+    if (strcmp(path, "/dev") == 0) {
+        /* Périphériques du registre, puis le contenu ramfs de /dev. La
+         * liste n'est qu'allongée, jamais raccourcie : on peut la parcourir
+         * après avoir lu sa tête sous verrou. */
+        spinlock_acquire(&dev_lock);
+        vfs_dev_t *d = dev_list;
+        spinlock_release(&dev_lock);
+        for (; d; d = d->next) {
+            uart_print("C  ");
+            uart_print(d->name);
+            uart_print("\n");
+        }
+        return ram_fs_ls(path);
+    }
+
+    if (is_ram_path(path)) {
+        if (dev_shadows(path)) return -1;
+        return ram_fs_ls(path);
+    }
     return fat32_ls(path);
+}
+
+/* ---- Périphériques ------------------------------------------------------ */
+
+int vfs_mknod(const char *path, vfs_dev_read_t read, vfs_dev_write_t write) {
+    if (!is_valid(path) || (read == NULL && write == NULL)) return -1;
+
+    /* Exactement /dev/<nom>, sans sous-dossier. */
+    uint32_t n = dev_component_len(path);
+    if (n == 0 || n >= VFS_DEV_NAME_MAX || path[5 + n] != '\0') return -1;
+
+    /* Pas de conflit avec un fichier ou un dossier ramfs du même nom. */
+    if (ram_fs_exists(path)) return -1;
+
+    vfs_dev_t *d = (vfs_dev_t *)nmap(sizeof(vfs_dev_t));
+    if (d == NULL) return -1;
+    memset(d, 0, sizeof(vfs_dev_t));
+    strncpy(d->name, path + 5, n);
+    d->name[n] = '\0';
+    d->read  = read;
+    d->write = write;
+
+    spinlock_acquire(&dev_lock);
+    for (vfs_dev_t *it = dev_list; it; it = it->next) {
+        if (strcmp(it->name, d->name) == 0) {
+            spinlock_release(&dev_lock);
+            unmap(d);
+            return -1;
+        }
+    }
+    /* Ajout en fin : ls /dev les affiche dans l'ordre d'enregistrement. */
+    if (dev_list == NULL) {
+        dev_list = d;
+    } else {
+        vfs_dev_t *last = dev_list;
+        while (last->next) last = last->next;
+        last->next = d;
+    }
+    spinlock_release(&dev_lock);
+    return 0;
 }

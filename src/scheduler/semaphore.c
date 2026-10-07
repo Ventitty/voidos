@@ -3,9 +3,7 @@
 void sem_init(semaphore_t *s, int initial_count) {
     spinlock_acquire(&s->lock);
     s->count = initial_count;
-    s->waitq_head = 0;
-    s->waitq_tail = 0;
-    s->waitq_count = 0;
+    wait_queue_init(&s->waiters);
     spinlock_release(&s->lock);
 }
 
@@ -32,17 +30,13 @@ void sem_wait(semaphore_t *s) {
             return;
         }
 
-        int me = scheduler_current_task_id();
-        if (me < 0) {
+        task_t *me = scheduler_current_task();
+        if (me == NULL) {
             spinlock_release(&s->lock);
             continue;
         }
 
-        if (s->waitq_count < MAX_TASKS) {
-            s->waitq[s->waitq_tail] = me;
-            s->waitq_tail = (s->waitq_tail + 1) % MAX_TASKS;
-            s->waitq_count++;
-        }
+        wait_queue_push(&s->waiters, me);
         /* Se marquer bloqué PENDANT qu'on tient encore le verrou : c'est le
          * seul moyen de ne pas perdre un réveil. En relâchant d'abord, un
          * sem_post() concurrent pouvait nous retirer de la file et appeler
@@ -69,16 +63,9 @@ void sem_post(semaphore_t *s) {
      * la réveillée (pas de FIFO strict), mais aucun jeton ne se perd. */
     s->count++;
 
-    int wake = -1;
-    if (s->waitq_count > 0) {
-        wake = s->waitq[s->waitq_head];
-        s->waitq_head = (s->waitq_head + 1) % MAX_TASKS;
-        s->waitq_count--;
-    }
+    task_t *wake = wait_queue_pop(&s->waiters);
 
     spinlock_release(&s->lock);
 
-    if (wake >= 0) {
-        scheduler_unblock(wake);
-    }
+    scheduler_unblock(wake);   /* sans effet si NULL */
 }

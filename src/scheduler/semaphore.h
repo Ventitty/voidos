@@ -4,18 +4,14 @@
 #include "src/types.h"
 #include "src/scheduler/spinlock.h"
 #include "src/scheduler/scheduler.h"
-#include "arch/xtensa_lx6/includes/xtensa.h"
 
 typedef struct {
     spinlock_t lock;
     volatile int count;
-    int waitq[MAX_TASKS];
-    int waitq_head;
-    int waitq_tail;
-    int waitq_count;
+    wait_queue_t waiters;
 } semaphore_t;
 
-#define SEMAPHORE_INIT(n) { SPINLOCK_INIT, (n), {0}, 0, 0, 0 }
+#define SEMAPHORE_INIT(n) { SPINLOCK_INIT, (n), WAIT_QUEUE_INIT }
 
 void sem_init(semaphore_t *s, int initial_count);
 void sem_wait(semaphore_t *s);
