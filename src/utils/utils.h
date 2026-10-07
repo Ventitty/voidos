@@ -2,6 +2,7 @@
 #define UTILS_H
 
 #include "src/types.h"
+#include "arch/xtensa_lx6/includes/cpu.h"
 
 void *memset(void *s, int c, size_t count);
 void *memcpy(void *dest, const void *src, size_t count);

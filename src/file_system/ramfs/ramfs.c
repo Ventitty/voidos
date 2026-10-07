@@ -61,9 +61,9 @@ static ram_fs_node_t *resolve_parent(const char *path, const char **out_name, ui
 
         if (len == 0) { p++; continue; }
 
-            ram_fs_node_t *child = find_child(cur, start, len);
-            if (!child || child->type != RAM_FS_TYPE_DIR) return NULL;
-            cur = child;
+        ram_fs_node_t *child = find_child(cur, start, len);
+        if (!child || child->type != RAM_FS_TYPE_DIR) return NULL;
+        cur = child;
         p++;
     }
 }
@@ -126,7 +126,7 @@ ram_fs_file_t *ram_fs_open(const char *path, int flags) {
         }
     } else if (node->type == RAM_FS_TYPE_DIR) {
         spinlock_release(&ram_fs_lock);
-        return NULL;   /* c'est un répertoire, pas un fichier/device */
+        return NULL;   /* c'est un répertoire, pas un fichier */
     } else if (node->type == RAM_FS_TYPE_FILE && (flags & RAM_FS_O_TRUNC)) {
         if (node->data) { unmap(node->data); node->data = NULL; }
         node->size = 0;
@@ -151,11 +151,6 @@ int ram_fs_read(ram_fs_file_t *file, void *buf, uint32_t len) {
     if (!file) return -1;
     ram_fs_node_t *n = file->node;
 
-    if (n->type == RAM_FS_TYPE_DEVICE) {
-        if (!n->dev_ops->read) return -1;
-        return n->dev_ops->read(n->dev_ctx, buf, len);
-    }
-
     spinlock_acquire(&ram_fs_lock);
 
     if (file->pos >= n->size) {
@@ -175,11 +170,6 @@ int ram_fs_read(ram_fs_file_t *file, void *buf, uint32_t len) {
 int ram_fs_write(ram_fs_file_t *file, const void *buf, uint32_t len) {
     if (!file) return -1;
     ram_fs_node_t *n = file->node;
-
-    if (n->type == RAM_FS_TYPE_DEVICE) {
-        if (!n->dev_ops->write) return -1;
-        return n->dev_ops->write(n->dev_ctx, buf, len);
-    }
 
     uint32_t end = file->pos + len;
 
@@ -219,34 +209,6 @@ int ram_fs_seek(ram_fs_file_t *file, int32_t offset, int whence) {
 
 uint32_t ram_fs_size(ram_fs_file_t *file) {
     return file ? file->node->size : 0;
-}
-
-int ram_fs_ioctl(ram_fs_file_t *file, uint32_t request, void *arg) {
-    if (!file || file->node->type != RAM_FS_TYPE_DEVICE || !file->node->dev_ops->ioctl) return -1;
-    return file->node->dev_ops->ioctl(file->node->dev_ctx, request, arg);
-}
-
-int ram_fs_mknod(const char *path, const ram_fs_dev_ops_t *ops, void *ctx) {
-    if (!ops) return -1;
-
-    spinlock_acquire(&ram_fs_lock);
-
-    const char *name;
-    uint32_t len;
-    ram_fs_node_t *parent = resolve_parent(path, &name, &len);
-    if (!parent || len == 0 || len >= RAM_FS_MAX_NAME || find_child(parent, name, len)) {
-        spinlock_release(&ram_fs_lock);
-        return -1;
-    }
-
-    ram_fs_node_t *n = alloc_node(name, len, RAM_FS_TYPE_DEVICE, parent);
-    if (n) {
-        n->dev_ops = ops;
-        n->dev_ctx = ctx;
-    }
-
-    spinlock_release(&ram_fs_lock);
-    return n ? 0 : -1;
 }
 
 int ram_fs_unlink(const char *path) {
@@ -371,10 +333,6 @@ int ram_fs_ls(const char *path) {
             uart_print("D  ");
             uart_print(c->name);
             uart_print("/\n");
-        } else if (c->type == RAM_FS_TYPE_DEVICE) {
-            uart_print("C  ");
-            uart_print(c->name);
-            uart_print("\n");
         } else {
             uart_print("F  ");
             uart_print(c->name);
@@ -396,9 +354,6 @@ static void print_node_recursive(ram_fs_node_t *node, int depth) {
     } else if (node->type == RAM_FS_TYPE_DIR) {
         uart_print(node->name);
         uart_print("/\n");
-    } else if (node->type == RAM_FS_TYPE_DEVICE) {
-        uart_print(node->name);
-        uart_print("  [device]\n");
     } else {
         uart_print(node->name);
         uart_print("  (");

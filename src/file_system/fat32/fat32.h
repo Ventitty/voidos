@@ -51,6 +51,8 @@ extern void uart_print(const char *str);
 extern void uart_print_hex(uint32_t val);
 
 int fat32_mount(void);
+int fat32_is_mounted(void);
+int fat32_stat(const char *path, uint32_t *out_size, int *out_is_dir);
 fat32_file_t *fat32_open(const char *path);
 void fat32_close(fat32_file_t *file);
 int  fat32_read(fat32_file_t *file, void *buf, uint32_t len);

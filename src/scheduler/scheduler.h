@@ -5,6 +5,7 @@
 #include "src/interrupts/interrupts.h"
 #include "src/memory_manager/memory.h"
 #include "src/scheduler/spinlock.h"
+#include "arch/xtensa_lx6/includes/cpu.h"
 
 #define STACK_FILL        0xA5A5A5A5u
 #define STACK_GUARD_BYTES 32u

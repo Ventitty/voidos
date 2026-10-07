@@ -3,6 +3,8 @@
 
 #include "src/types.h"
 #include "arch/xtensa_lx6/includes/xtensa.h"
+#include "arch/xtensa_lx6/includes/cpu.h"
+#include "src/scheduler/spinlock.h"
 
 typedef void (*isr_handler_t)(void *arg);
 

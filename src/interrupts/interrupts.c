@@ -1,5 +1,4 @@
 #include "src/interrupts/interrupts.h"
-#include "src/scheduler/spinlock.h"
 
 extern char _vector_base[];
 static isr_entry_t isr_table[32];
@@ -7,23 +6,9 @@ static spinlock_t panic_print_lock = SPINLOCK_INIT;
 
 void interrupts_init_this_core(void) {
     uint32_t vecbase = (uint32_t)_vector_base;
-    __asm__ volatile (
-        "wsr %0, vecbase\n"
-        "rsync\n"
-        :: "r"(vecbase)
-    );
-
-    __asm__ volatile (
-        "wsr %0, intenable\n"
-        "rsync\n"
-        :: "r"(0)
-    );
-
-    __asm__ volatile (
-        "wsr %0, intclear\n"
-        "rsync\n"
-        :: "r"(0xFFFFFFFF)
-    );
+    cpu_set_vecbase(vecbase);
+    cpu_write_intenable(0);
+    cpu_clear_irq(0xFFFFFFFFu);
 }
 
 void interrupts_init(void) {
@@ -38,14 +23,7 @@ void interrupts_init(void) {
 void interrupts_enable_line(uint8_t int_num) {
     if (int_num >= 32) return;
 
-    uint32_t intenable;
-    __asm__ volatile ("rsr %0, intenable" : "=r"(intenable));
-    intenable |= (1U << int_num);
-    __asm__ volatile (
-        "wsr %0, intenable\n"
-        "rsync\n"
-        :: "r"(intenable)
-    );
+    cpu_write_intenable(cpu_read_intenable() | (1U << int_num));
 }
 
 void interrupts_register_handler(uint8_t int_num, isr_handler_t handler, void *arg) {
@@ -55,17 +33,11 @@ void interrupts_register_handler(uint8_t int_num, isr_handler_t handler, void *a
 }
 
 void interrupts_enable_global(void) {
-    __asm__ volatile (
-        "rsil a2, 0\n"
-        ::: "a2"
-    );
+    (void)cpu_irq_unmask_all();
 }
 
 void interrupts_disable_global(void) {
-    __asm__ volatile (
-        "rsil a2, 15\n"
-        ::: "a2"
-    );
+    (void)cpu_irq_mask_all();
 }
 
 static void panic_dump(const cpu_context_t *ctx) {
@@ -85,16 +57,12 @@ static void panic_dump(const cpu_context_t *ctx) {
     spinlock_release(&panic_print_lock);   /* libère APRES l'affichage : si l'autre coeur panique aussi, il pourra afficher son propre diagnostic au lieu de rester bloqué en silence sur ce verrou */
 
     while (1) {
-        __asm__ volatile ("waiti 0");
+        cpu_wait_irq();
     }
 }
 
 static int dispatch_pending_interrupts(void) {
-    uint32_t pending, enabled;
-    __asm__ volatile ("rsr %0, interrupt"  : "=r"(pending));
-    __asm__ volatile ("rsr %0, intenable"  : "=r"(enabled));
-
-    uint32_t active = pending & enabled;
+    uint32_t active = cpu_read_pending_irq() & cpu_read_intenable();
     if (active == 0) return 0;
 
     int handled = 0;
@@ -106,7 +74,7 @@ static int dispatch_pending_interrupts(void) {
             handled = 1;
         }
 
-        __asm__ volatile ("wsr %0, intclear\n rsync\n" :: "r"(1U << i));
+        cpu_clear_irq(1U << i);
     }
 
     return handled;

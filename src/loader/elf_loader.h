@@ -2,11 +2,13 @@
 #define ELF_LOADER_H
 
 #include "src/types.h"
-#include "src/file_system/fat32/fat32.h"
-#include "src/file_system/ramfs/ramfs.h"
+#include "src/file_system/vfs/vfs.h"
 #include "src/scheduler/scheduler.h"
 #include "src/utils/utils.h"
 #include "src/memory_manager/memory.h"
+#include "arch/xtensa_lx6/includes/cpu.h"
+#include "src/scheduler/spinlock.h"
+
 
 #define EI_CLASS    4
 #define EI_DATA     5
@@ -18,7 +20,6 @@
 #define SHDR_SIZE 40
 #define RELA_SIZE 12
 
-/* Types de sections / relocations utilisés. */
 #define SHT_PROGBITS 1
 #define SHT_NOBITS   8
 #define SHT_RELA     4
@@ -36,6 +37,13 @@ typedef struct {
     void *iram_block;
     void *dram_block;
 } elf_image_t;
+
+typedef struct {
+    void *handle;
+    int (*read)(void *h, void *buf, uint32_t len);
+    int (*seek)(void *h, int32_t off, int whence);
+    void (*close)(void *h);
+} elf_src_t;
 
 int elf_load_image(const char *path, elf_image_t *out);
 void elf_unload(elf_image_t *img);

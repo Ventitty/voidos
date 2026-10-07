@@ -19,9 +19,8 @@
 #include "arch/xtensa_lx6/drivers/esp32_gpio/gpio.h"
 #include "arch/xtensa_lx6/drivers/esp32_spi/spi.h"
 #include "arch/xtensa_lx6/drivers/esp32_sdcard/sdcard.h"
-#include "src/file_system/ramfs/ramfs.h"
-#include "src/file_system/devfs/devfs.h"
-#include "src/file_system/fat32/fat32.h"
+#include "arch/xtensa_lx6/drivers/esp32_uart/uart.h"
+#include "src/file_system/vfs/vfs.h"
 #include "src/loader/elf_loader.h"
 
 void uart_print(const char *str);

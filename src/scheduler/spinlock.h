@@ -2,6 +2,7 @@
 #define SPINLOCK_H
 
 #include "src/types.h"
+#include "arch/xtensa_lx6/includes/cpu.h"
 
 #define SPINLOCK_INIT { 0, 0 }
 #define SPINLOCK_INTLEVEL 3u

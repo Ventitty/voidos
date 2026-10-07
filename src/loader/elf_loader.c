@@ -1,34 +1,16 @@
 #include "src/loader/elf_loader.h"
-#include "src/memory_manager/memory.h"
-#include "src/scheduler/spinlock.h"
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24)); }
 
-typedef struct {
-    void *handle;
-    int (*read)(void *h, void *buf, uint32_t len);
-    int (*seek)(void *h, int32_t off, int whence);
-    void (*close)(void *h);
-} elf_src_t;
-
-static int  src_fat_read(void *h, void *b, uint32_t n) { return fat32_read((fat32_file_t *)h, b, n); }
-static int  src_fat_seek(void *h, int32_t o, int w)    { return fat32_seek((fat32_file_t *)h, o, w); }
-static void src_fat_close(void *h)                     { fat32_close((fat32_file_t *)h); }
-static int  src_ram_read(void *h, void *b, uint32_t n) { return ram_fs_read((ram_fs_file_t *)h, b, n); }
-static int  src_ram_seek(void *h, int32_t o, int w)    { return ram_fs_seek((ram_fs_file_t *)h, o, w); }
-static void src_ram_close(void *h)                     { ram_fs_close((ram_fs_file_t *)h); }
+static int  src_vfs_read(void *h, void *b, uint32_t n) { return vfs_read((vfs_file_t *)h, b, n); }
+static int  src_vfs_seek(void *h, int32_t o, int w)    { return vfs_seek((vfs_file_t *)h, o, w); }
+static void src_vfs_close(void *h)                     { vfs_close((vfs_file_t *)h); }
 
 static int elf_src_open(const char *path, elf_src_t *out) {
-    if (path[0] == '/' && path[1] == 's' && path[2] == 'd' && path[3] == '/') {
-        fat32_file_t *f = fat32_open(path + 3);
-        if (!f) return -1;
-        out->handle = f; out->read = src_fat_read; out->seek = src_fat_seek; out->close = src_fat_close;
-        return 0;
-    }
-    ram_fs_file_t *f = ram_fs_open(path, RAM_FS_O_READ);
+    vfs_file_t *f = vfs_open(path, VFS_O_READ);
     if (!f) return -1;
-    out->handle = f; out->read = src_ram_read; out->seek = src_ram_seek; out->close = src_ram_close;
+    out->handle = f; out->read = src_vfs_read; out->seek = src_vfs_seek; out->close = src_vfs_close;
     return 0;
 }
 
@@ -210,7 +192,7 @@ int elf_load_image(const char *path, elf_image_t *out) {
             if (secs[i].type != SHT_RELA) continue;
             if (secs[i].info >= e_shnum || !secs[secs[i].info].loaded) continue;
 
-                const sec_t *target = &secs[secs[i].info];
+            const sec_t *target = &secs[secs[i].info];
             for (uint32_t off = 0; off + RELA_SIZE <= secs[i].size; off += RELA_SIZE) {
                 uint8_t ent[RELA_SIZE];
                 if (src_read_at(&src, secs[i].offset + off, ent, RELA_SIZE) != 0) goto done;
@@ -219,9 +201,9 @@ int elf_load_image(const char *path, elf_image_t *out) {
                 uint32_t r_type   = rd32(&ent[4]) & 0xFFu;
 
                 if (r_type == R_XTENSA_SLOT0_OP) continue;
-                    if (r_type != R_XTENSA_32) continue;
+                if (r_type != R_XTENSA_32) continue;
 
-                        uint32_t loc = r_offset + target->delta;
+                uint32_t loc = r_offset + target->delta;
                 if ((loc & 3u) != 0) {
                     uart_print("[elf] relocation non alignee -- abandon\n");
                     goto done;
@@ -230,7 +212,7 @@ int elf_load_image(const char *path, elf_image_t *out) {
                 uint32_t old = read32(loc);
                 const sec_t *pointee = section_of_addr(secs, e_shnum, old);
                 if (pointee == NULL) continue;
-                    write32(loc, old + pointee->delta);
+                write32(loc, old + pointee->delta);
                 patched++;
             }
         }
@@ -238,7 +220,7 @@ int elf_load_image(const char *path, elf_image_t *out) {
         const sec_t *entry_sec = section_of_addr(secs, e_shnum, e_entry);
         if (entry_sec == NULL) { uart_print("[elf] point d'entree hors des sections chargees\n"); goto done; }
 
-        __asm__ volatile ("memw\n\tisync" ::: "memory");
+        cpu_sync_code();
 
         out->entry      = (void (*)(void))(e_entry + entry_sec->delta);
         out->iram_block = iram_block;

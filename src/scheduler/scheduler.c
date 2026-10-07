@@ -17,9 +17,7 @@ static void stack_overflow_halt(int task_id, uint32_t sp) {
     uart_print(" (TASK_STACK_SIZE trop petit, ou recursion)\n");
     uart_print("[noyau] coeur arrete : la memoire voisine a pu etre corrompue.\n");
 
-    uint32_t ps;
-    __asm__ volatile ("rsil %0, 15" : "=r"(ps) :: "memory");
-    (void)ps;
+    (void)cpu_irq_mask_all();
     while (1) { }
 }
 
@@ -50,9 +48,7 @@ uint32_t scheduler_stack_unused(int task_id) {
 }
 
 uint32_t get_core_id(void) {
-    uint32_t prid;
-    __asm__ volatile ("rsr.prid %0" : "=r"(prid));
-    return (prid >> 13) & 1u;
+    return cpu_core_id();
 }
 
 static void task_exit(void) {
@@ -66,7 +62,7 @@ static void task_exit(void) {
     spinlock_release(&tasks_lock);
 
     while (1) {
-        __asm__ volatile ("waiti 0");
+        cpu_wait_irq();
     }
 }
 
@@ -118,8 +114,7 @@ static int task_create_common(void (*entry)(void), uint8_t pinned_core, int user
     ctx->a0       = (uint32_t)task_exit;
     ctx->exccause = EXCCAUSE_LEVEL1_INTERRUPT;
 
-    uint32_t ps;
-    __asm__ volatile ("rsr %0, ps" : "=r"(ps));
+    uint32_t ps = cpu_read_ps();
     if (user_mode) {
         ps |= 0x00000020u;
     }
@@ -225,7 +220,7 @@ void scheduler_yield_blocked(int me) {
     if (me < 0) return;
 
     while (tasks[me].state == TASK_BLOCKED) {
-        __asm__ volatile ("waiti 0");
+        cpu_wait_irq();
     }
 }
 
@@ -269,6 +264,6 @@ void scheduler_start(void) {
     interrupts_enable_global();
 
     while (1) {
-        __asm__ volatile ("waiti 0");
+        cpu_wait_irq();
     }
 }

@@ -1,41 +1,18 @@
 #include "src/kernel/kernel.h"
 
-static ram_fs_file_t *g_uart0_file = NULL;
-static volatile int uart_in_panic = 0;
-
-void uart_fs_bootstrap(void) {
-    g_uart0_file = ram_fs_open("/dev/uart0", RAM_FS_O_WRITE | RAM_FS_O_READ);
-}
-
-void uart_enter_panic_mode(void) {
-    uart_in_panic = 1;
-}
-
-void uart_putchar(char c) {
-    if (g_uart0_file != NULL && !uart_in_panic) {
-        ram_fs_write(g_uart0_file, &c, 1);
-        return;
-    }
-    uart0_hw_putchar(c);
-}
-
 static spinlock_t uart_lock = SPINLOCK_INIT;
 
 static void uart_write_str(const char *str) {
     while (*str != '\0') {
         if (*str == '\n') {
-            uart_putchar('\r');
+            uart0_putchar('\r');
         }
-        uart_putchar(*str);
+        uart0_putchar(*str);
         str++;
     }
 }
 
 void uart_print(const char *str) {
-    if (uart_in_panic) {
-        uart_write_str(str);
-        return;
-    }
     spinlock_acquire(&uart_lock);
     uart_write_str(str);
     spinlock_release(&uart_lock);
@@ -76,14 +53,14 @@ void echo(void) {
             char c = (char)(UART0_FIFO & 0xFFu);
 
             if (c == '\r' || c == '\n') {
-                uart_putchar('\r');
-                uart_putchar('\n');
+                uart0_putchar('\r');
+                uart0_putchar('\n');
                 uart_print("Input > ");
                 led_toggle();
             } else if (c == '\b' || c == 0x7F) {
                 uart_print("\b \b");
             } else {
-                uart_putchar(c);
+                uart0_putchar(c);
             }
         }
     }
@@ -95,9 +72,9 @@ void echo(void) {
 #define SD_CS   5
 
 static const char *programmes[] = {
-    "/sd/BIN/PROG1.ELF",
-    "/sd/BIN/PROG2.ELF",
-    "/sd/BIN/PROG3.ELF",
+    "/BIN/PROG1.ELF",
+    "/BIN/PROG2.ELF",
+    "/BIN/PROG3.ELF",
 };
 #define NB_PROGRAMMES (sizeof(programmes) / sizeof(programmes[0]))
 
@@ -126,18 +103,44 @@ static void test_memoire(void) {
     elf_loader_print_layout();
 }
 
+static void test_vfs(void) {
+    uart_print("\n--- systeme de fichiers ---\n");
+
+    static const char msg[] = "bonjour /tmp";
+    vfs_file_t *f = vfs_open("/tmp/essai.txt", VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+    ok(f != NULL, "creation de /tmp/essai.txt");
+    ok(f != NULL && vfs_write(f, msg, sizeof(msg)) == (int)sizeof(msg), "ecriture en RAM");
+    vfs_close(f);
+
+    char buf[sizeof(msg)];
+    memset(buf, 0, sizeof(buf));
+    f = vfs_open("/tmp/essai.txt", VFS_O_READ);
+    ok(f != NULL && vfs_read(f, buf, sizeof(buf)) == (int)sizeof(buf)
+    && memcmp(buf, msg, sizeof(msg)) == 0, "relecture identique");
+    vfs_close(f);
+
+    uint32_t size = 0;
+    int dir = 1;
+    ok(vfs_stat("/tmp/essai.txt", &size, &dir) == 0 && size == sizeof(msg) && !dir, "stat d'un fichier RAM");
+    ok(vfs_unlink("/tmp/essai.txt") == 0 && !vfs_exists("/tmp/essai.txt"), "suppression");
+
+    ok(vfs_is_dir("/dev") && vfs_is_dir("/tmp") && vfs_is_dir("/"), "/, /dev et /tmp sont des dossiers");
+    ok(vfs_rmdir("/tmp") != 0, "/tmp protege contre rmdir");
+    ok(vfs_open("/ECRIT.TXT", VFS_O_WRITE | VFS_O_CREATE) == NULL, "carte SD en lecture seule");
+}
+
 static void lancer_programmes(void) {
     uart_print("\n--- programmes ---\n");
 
     uint32_t lances = 0;
     for (uint32_t i = 0; i < NB_PROGRAMMES; i++) {
         if (elf_load_image(programmes[i], &images[i]) != 0) continue;
-            if (task_create(images[i].entry) < 0) {
-                uart_print("[init] plus de tache disponible\n");
-                elf_unload(&images[i]);
-                continue;
-            }
-            lances++;
+        if (task_create(images[i].entry) < 0) {
+            uart_print("[init] plus de tache disponible\n");
+            elf_unload(&images[i]);
+            continue;
+        }
+        lances++;
     }
 
     uart_print("[init] programmes lances = "); uart_print_hex(lances); uart_print("\n");
@@ -148,15 +151,20 @@ static void tache_init(void) {
     uart_print("\n=== voidOS demarre ===\n");
 
     test_memoire();
+    test_vfs();
 
     uart_print("\n--- carte SD ---\n");
-    if (sd_init(SD_SCLK, SD_MOSI, SD_MISO, SD_CS) != 0) {
+    int sd = vfs_mount_sd(SD_SCLK, SD_MOSI, SD_MISO, SD_CS);
+    if (sd == VFS_SD_NO_CARD) {
         uart_print("[init] pas de carte SD : le noyau tourne sans\n");
-    } else if (fat32_mount() != 0) {
+    } else if (sd == VFS_SD_BAD_FS) {
         uart_print("[init] carte illisible (formatee en FAT32 ?)\n");
-    } else {
-        uart_print("[init] racine de la carte :\n");
-        fat32_ls("/");
+    }
+
+    uart_print("[init] racine du systeme de fichiers :\n");
+    vfs_ls("/");
+
+    if (sd == VFS_SD_OK) {
         lancer_programmes();
     }
 
@@ -174,10 +182,7 @@ void kernel_main(void) {
     start_app_cpu();
     led_init();
 
-    ram_fs_init();
-    ram_fs_mkdir("/dev");
-    dev_fs_register_hw_devices();
-    uart_fs_bootstrap();
+    vfs_init();
 
     task_create(echo);
     task_create(tache_init);

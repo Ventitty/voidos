@@ -46,7 +46,7 @@ int memcmp(const void *cs, const void *ct, size_t count) {
 
 void memzero_explicit(void *s, size_t count) {
     memset(s, 0, count);
-    __asm__ __volatile__("" : : "r"(s) : "memory");
+    cpu_compiler_barrier_ptr(s);
 }
 
 size_t strlen(const char *s) {
@@ -180,8 +180,6 @@ char *utoa_base(uint32_t value, char *buf, int base) {
 char *itoa(int value, char *buf) {
     if (value < 0) {
         buf[0] = '-';
-        /* -value peut déborder pour INT_MIN, mais on reste volontairement
-         * simple ici (cas limite non géré, comme documenté dans le header). */
         utoa_base((uint32_t)(-value), buf + 1, 10);
         return buf;
     }

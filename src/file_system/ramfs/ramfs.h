@@ -21,14 +21,7 @@
 typedef enum {
     RAM_FS_TYPE_FILE   = 0,
     RAM_FS_TYPE_DIR    = 1,
-    RAM_FS_TYPE_DEVICE = 2,
 } ram_fs_type_t;
-
-typedef struct {
-    int (*read)(void *ctx, void *buf, uint32_t len);
-    int (*write)(void *ctx, const void *buf, uint32_t len);
-    int (*ioctl)(void *ctx, uint32_t request, void *arg);
-} ram_fs_dev_ops_t;
 
 typedef struct ram_fs_node {
     char name[RAM_FS_MAX_NAME];
@@ -41,9 +34,6 @@ typedef struct ram_fs_node {
     uint8_t *data;
     uint32_t size;
     uint32_t capacity;
-
-    const ram_fs_dev_ops_t *dev_ops;
-    void *dev_ctx;
 } ram_fs_node_t;
 
 struct ram_fs_file {
@@ -67,8 +57,6 @@ uint32_t ram_fs_size(ram_fs_file_t *file);
 
 int ram_fs_unlink(const char *path);
 
-int ram_fs_ioctl(ram_fs_file_t *file, uint32_t request, void *arg);
-int ram_fs_mknod(const char *path, const ram_fs_dev_ops_t *ops, void *ctx);
 int ram_fs_mkdir(const char *path);
 int ram_fs_mkdir_p(const char *path);
 int ram_fs_rmdir(const char *path);

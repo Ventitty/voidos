@@ -215,6 +215,41 @@ fat32_file_t *fat32_open(const char *path) {
     return f;
 }
 
+int fat32_is_mounted(void) {
+    return vol.mounted;
+}
+
+int fat32_stat(const char *path, uint32_t *out_size, int *out_is_dir) {
+    if (!vol.mounted || !path || path[0] != '/') return -1;
+
+    if (path[1] == '\0') {
+        if (out_size) *out_size = 0;
+        if (out_is_dir) *out_is_dir = 1;
+        return 0;
+    }
+
+    spinlock_acquire(&fat32_lock);
+
+    uint32_t parent_cluster;
+    const char *name;
+    uint32_t name_len;
+    if (resolve_parent(path, &parent_cluster, &name, &name_len) != 0 || name_len == 0) {
+        spinlock_release(&fat32_lock);
+        return -1;
+    }
+
+    uint32_t cluster = 0, size = 0;
+    uint8_t attr = 0;
+    int found = dir_find(parent_cluster, name, name_len, &cluster, &size, &attr);
+
+    spinlock_release(&fat32_lock);
+
+    if (found <= 0) return -1;
+    if (out_size) *out_size = (attr & ATTR_DIRECTORY) ? 0 : size;
+    if (out_is_dir) *out_is_dir = (attr & ATTR_DIRECTORY) ? 1 : 0;
+    return 0;
+}
+
 void fat32_close(fat32_file_t *file) {
     if (file) unmap(file);
 }
