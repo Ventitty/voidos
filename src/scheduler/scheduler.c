@@ -2,42 +2,16 @@
 #include "src/utils/utils.h"
 #include "arch/xtensa_lx6/includes/cpu.h"
 
-/* ---------------------------------------------------------------------------
- * Ordonnanceur préemptif round-robin, SMP 2 cœurs, tâches allouées sur le tas.
- *
- * tasks_lock protège : task_list, cursor, task_count, next_id, l'état
- * (state / running_on / sp) de chaque tâche et current_task[].
- *
- * Cycle de vie d'une tâche :
- *   task_alloc (nmap) -> READY <-> RUNNING <-> BLOCKED -> ZOMBIE -> task_free
- *
- * Libération différée : quand une tâche se termine, on est encore en train
- * d'exécuter du code SUR SA PILE (task_exit, ou l'interruption qui gère son
- * SYS_EXIT). On ne peut donc pas la libérer tout de suite. Elle est retirée
- * de la liste (ZOMBIE), puis le cœur la quitte en basculant vers une autre
- * tâche et la note dans retired[core]. Au changement de contexte SUIVANT
- * sur ce même cœur, on s'exécute forcément sur la pile d'une autre tâche :
- * la zombie est libérée à ce moment-là. Seul le cœur qui l'a retirée la
- * libère, l'autre cœur n'y touche jamais.
- *
- * Tâches idle : une par cœur, hors de la liste, élue quand rien d'autre
- * n'est prêt. Grâce à elles le cœur quitte TOUJOURS la tâche sortante, ce
- * qui garantit la libération différée ci-dessus et évite qu'un cœur reste
- * sur la pile d'une tâche bloquée pendant que l'autre la reprend.
- * ------------------------------------------------------------------------- */
-
 static spinlock_t tasks_lock = SPINLOCK_INIT;
 
-static task_t  *task_list  = NULL;   /* tâches ordonnançables (hors idle)    */
-static task_t  *cursor     = NULL;   /* dernière élue (tourniquet)           */
+static task_t  *task_list  = NULL;
+static task_t  *cursor     = NULL;
 static uint32_t task_count = 0;
 static int      next_id    = 0;
 
 static task_t *volatile current_task[2] = { NULL, NULL };
 static task_t *idle_task[2] = { NULL, NULL };
-static task_t *retired[2]   = { NULL, NULL };   /* zombie à libérer au prochain passage */
-
-/* ---- Détection de débordement de pile ----------------------------------- */
+static task_t *retired[2]   = { NULL, NULL };
 
 static void stack_overflow_halt(const task_t *t, uint32_t sp) {
     uart_print("\n[noyau] DEBORDEMENT DE PILE : tache ");
@@ -69,8 +43,6 @@ static void stack_check_outgoing(const task_t *t, uint32_t *current_sp) {
     }
 }
 
-/* ---- Liste des tâches (sous tasks_lock) --------------------------------- */
-
 static void list_append_locked(task_t *t) {
     t->next = NULL;
     if (task_list == NULL) {
@@ -91,7 +63,6 @@ static void list_remove_locked(task_t *t) {
         if (prev) prev->next = t->next;
         else      task_list = t->next;
 
-        /* Le tourniquet repart du prédécesseur (ou de la tête si NULL). */
         if (cursor == t) cursor = prev;
 
         t->next = NULL;
@@ -112,9 +83,6 @@ static void mark_zombie_locked(task_t *t) {
     list_remove_locked(t);
 }
 
-/* Une tâche est élue si elle est prête, autorisée sur ce cœur, et n'est
- * PAS en train de s'exécuter ailleurs : une tâche débloquée par l'autre
- * cœur avant d'avoir été préemptée est READY mais tourne encore. */
 static int eligible(const task_t *t, uint32_t core) {
     return t->state == TASK_READY
     && t->running_on == TASK_ANY_CORE
@@ -137,15 +105,12 @@ static task_t *pick_next_locked(uint32_t core) {
     return NULL;
 }
 
-/* ---- Allocation / libération ------------------------------------------- */
-
 static void task_exit(void) {
-    spinlock_acquire(&tasks_lock);           /* masque l'IRQ du tick : pas de migration */
+    spinlock_acquire(&tasks_lock);
     task_t *me = current_task[cpu_core_id()];
     if (me != NULL) mark_zombie_locked(me);
     spinlock_release(&tasks_lock);
 
-    /* Le prochain tick bascule ailleurs et note la zombie comme retirée. */
     while (1) cpu_wait_irq();
 }
 
@@ -195,8 +160,6 @@ static void task_free(task_t *t) {
     unmap(t);
 }
 
-/* ---- Initialisation et création ---------------------------------------- */
-
 void scheduler_init(void) {
     spinlock_acquire(&tasks_lock);
     task_list  = NULL;
@@ -224,7 +187,7 @@ static int task_create_common(void (*entry)(void), uint8_t pinned_core, int user
     spinlock_acquire(&tasks_lock);
     t->id = next_id;
     next_id = (next_id + 1) & 0x7FFFFFFF;
-    int id = t->id;               /* lu sous verrou : t peut finir dès le release */
+    int id = t->id;
     list_append_locked(t);
     spinlock_release(&tasks_lock);
 
@@ -249,16 +212,12 @@ int task_create_user_pinned(void (*entry)(void), uint8_t core) {
     return task_create_common(entry, core, 1);
 }
 
-/* ---- Changement de contexte (appelé depuis l'interruption) ------------- */
-
 uint32_t *schedule_next_task(uint32_t *current_sp) {
     uint32_t core = cpu_core_id();
     task_t *cur = current_task[core];
 
     stack_check_outgoing(cur, current_sp);
 
-    /* Zombie quittée au passage précédent : on est maintenant sur la pile
-     * d'une autre tâche, elle peut être libérée (après le verrou). */
     task_t *to_free = retired[core];
     retired[core] = NULL;
 
@@ -313,20 +272,14 @@ void scheduler_start(void) {
     set_cpu_private_timer(0, TICK_CYCLES);
     interrupts_enable_global();
 
-    /* La pile de boot est abandonnée au premier tick. */
     while (1) cpu_wait_irq();
 }
-
-/* ---- Tâche courante et blocage ----------------------------------------- */
 
 uint32_t get_core_id(void) {
     return cpu_core_id();
 }
 
 task_t *scheduler_current_task(void) {
-    /* Masquage : sans lui, une préemption entre la lecture du numéro de
-     * cœur et celle de current_task[] pourrait nous faire migrer et lire
-     * la tâche de l'autre cœur. */
     uint32_t ps = cpu_irq_mask_all();
     uint32_t core = cpu_core_id();
     task_t *t = current_task[core];
@@ -373,8 +326,6 @@ void scheduler_unblock(task_t *t) {
     }
     spinlock_release(&tasks_lock);
 }
-
-/* ---- Statistiques ------------------------------------------------------- */
 
 uint32_t scheduler_stack_unused(int task_id) {
     uint32_t n = 0;
